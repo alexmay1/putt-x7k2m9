@@ -1,0 +1,1401 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <title>PuttGuide - 3D Green Simulator</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+            -webkit-tap-highlight-color: transparent;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: #0a0a0a;
+            color: white;
+            overflow: hidden;
+            height: 100vh;
+            width: 100vw;
+        }
+
+        #app {
+            display: flex;
+            flex-direction: column;
+            height: 100vh;
+        }
+
+        header {
+            background: rgba(0, 0, 0, 0.9);
+            padding: 12px 16px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            border-bottom: 1px solid rgba(34, 197, 94, 0.3);
+        }
+
+        header h1 {
+            font-size: 18px;
+            font-weight: bold;
+            color: #22c55e;
+        }
+
+        .badge {
+            background: rgba(34, 197, 94, 0.2);
+            color: #22c55e;
+            padding: 4px 12px;
+            border-radius: 12px;
+            font-size: 11px;
+            font-weight: 600;
+        }
+
+        #canvas-container {
+            flex: 1;
+            position: relative;
+            overflow: hidden;
+            background: #1a1a1a;
+        }
+
+        #green-canvas {
+            width: 100%;
+            height: 100%;
+            cursor: crosshair;
+        }
+
+        #info-overlay {
+            position: absolute;
+            top: 12px;
+            left: 50%;
+            transform: translateX(-50%);
+            background: rgba(0, 0, 0, 0.8);
+            padding: 10px 16px;
+            border-radius: 8px;
+            font-size: 13px;
+            font-weight: 600;
+            pointer-events: none;
+            border: 1px solid rgba(34, 197, 94, 0.3);
+        }
+
+        #controls {
+            background: rgba(0, 0, 0, 0.95);
+            padding: 16px;
+            max-height: 50vh;
+            overflow-y: auto;
+            border-top: 1px solid rgba(34, 197, 94, 0.3);
+        }
+
+        .control-section {
+            margin-bottom: 14px;
+        }
+
+        .section-title {
+            font-size: 11px;
+            text-transform: uppercase;
+            color: rgba(255, 255, 255, 0.5);
+            margin-bottom: 8px;
+            font-weight: 600;
+            letter-spacing: 0.5px;
+        }
+
+        .btn-group {
+            display: flex;
+            gap: 8px;
+        }
+
+        .btn {
+            flex: 1;
+            padding: 12px;
+            border: none;
+            border-radius: 8px;
+            font-size: 13px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 6px;
+        }
+
+        .btn-primary {
+            background: #22c55e;
+            color: white;
+        }
+
+        .btn-secondary {
+            background: rgba(255, 255, 255, 0.1);
+            color: white;
+            border: 1px solid rgba(255, 255, 255, 0.2);
+        }
+
+        .btn-danger {
+            background: rgba(239, 68, 68, 0.8);
+            color: white;
+        }
+
+        .btn:active {
+            transform: scale(0.97);
+        }
+
+        .preset-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr 1fr;
+            gap: 6px;
+        }
+
+        .preset-btn {
+            padding: 10px 6px;
+            background: rgba(255, 255, 255, 0.05);
+            border: 1px solid rgba(255, 255, 255, 0.15);
+            border-radius: 6px;
+            color: white;
+            cursor: pointer;
+            transition: all 0.2s;
+            font-size: 11px;
+            font-weight: 600;
+            text-align: center;
+        }
+
+        .preset-btn.active {
+            background: rgba(34, 197, 94, 0.3);
+            border-color: #22c55e;
+        }
+
+        .slider-control {
+            margin-bottom: 12px;
+        }
+
+        .slider-label {
+            display: flex;
+            justify-content: space-between;
+            margin-bottom: 6px;
+            font-size: 12px;
+        }
+
+        .slider-value {
+            color: #22c55e;
+            font-weight: 600;
+        }
+
+        input[type="range"] {
+            width: 100%;
+            height: 6px;
+            border-radius: 3px;
+            background: rgba(255, 255, 255, 0.15);
+            outline: none;
+            -webkit-appearance: none;
+        }
+
+        input[type="range"]::-webkit-slider-thumb {
+            -webkit-appearance: none;
+            width: 20px;
+            height: 20px;
+            border-radius: 50%;
+            background: #22c55e;
+            cursor: pointer;
+        }
+
+        input[type="range"]::-moz-range-thumb {
+            width: 20px;
+            height: 20px;
+            border-radius: 50%;
+            background: #22c55e;
+            cursor: pointer;
+            border: none;
+        }
+
+        .distance-display {
+            background: rgba(34, 197, 94, 0.15);
+            padding: 10px;
+            border-radius: 8px;
+            text-align: center;
+            border: 1px solid rgba(34, 197, 94, 0.3);
+        }
+
+        .distance-value {
+            font-size: 22px;
+            font-weight: bold;
+            color: #22c55e;
+        }
+
+        .distance-label {
+            font-size: 10px;
+            color: rgba(255, 255, 255, 0.6);
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        .legend {
+            display: flex;
+            gap: 12px;
+            flex-wrap: wrap;
+            font-size: 11px;
+            padding: 8px;
+            background: rgba(0, 0, 0, 0.5);
+            border-radius: 6px;
+        }
+
+        .legend-item {
+            display: flex;
+            align-items: center;
+            gap: 4px;
+        }
+
+        .legend-color {
+            width: 16px;
+            height: 16px;
+            border-radius: 3px;
+            border: 1px solid rgba(255, 255, 255, 0.3);
+        }
+
+        .disclaimer {
+            background: rgba(255, 200, 0, 0.1);
+            border: 1px solid rgba(255, 200, 0, 0.3);
+            padding: 8px;
+            border-radius: 6px;
+            font-size: 10px;
+            color: rgba(255, 255, 255, 0.8);
+            line-height: 1.3;
+            margin-top: 8px;
+        }
+
+        #controls::-webkit-scrollbar {
+            width: 0px;
+        }
+    </style>
+</head>
+<body>
+    <div id="app">
+        <header>
+            <h1>🏌️ Green Simulator</h1>
+            <span class="badge">3D Contour View</span>
+        </header>
+
+        <div id="canvas-container">
+            <canvas id="green-canvas"></canvas>
+            <div id="info-overlay">Tap to place hole and ball</div>
+        </div>
+
+        <div id="controls">
+            <!-- Marker Placement -->
+            <div class="control-section">
+                <div class="btn-group">
+                    <button class="btn btn-primary" id="place-hole-btn">🚩 Hole</button>
+                    <button class="btn btn-primary" id="place-ball-btn">⚪ Ball</button>
+                    <button class="btn btn-danger" id="reset-btn">🔄 Reset</button>
+                </div>
+            </div>
+
+            <!-- Distance -->
+            <div class="control-section" id="distance-section" style="display: none;">
+                <div class="distance-display">
+                    <div class="distance-label">Putt Distance</div>
+                    <div class="distance-value" id="distance-value">0.0m</div>
+                </div>
+            </div>
+
+            <!-- Green Preset -->
+            <div class="control-section">
+                <div class="section-title">Green Type</div>
+                <div class="preset-grid" id="preset-grid"></div>
+            </div>
+
+            <!-- Putt Physics -->
+            <div class="control-section">
+                <div class="section-title">Putt Power / Speed</div>
+                <div class="slider-control">
+                    <div class="slider-label">
+                        <span id="power-label">Medium (10 Stimp)</span>
+                        <span class="slider-value" id="power-value">50%</span>
+                    </div>
+                    <input type="range" id="power-slider" min="0" max="100" value="50">
+                </div>
+                <div class="legend">
+                    <div class="legend-item">
+                        <span style="color: #ef4444;">●</span>
+                        <span>Soft (more break)</span>
+                    </div>
+                    <div class="legend-item">
+                        <span style="color: #22c55e;">●</span>
+                        <span>Hard (holds line)</span>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Visualization -->
+            <div class="control-section">
+                <div class="section-title">Visualization</div>
+                <div class="btn-group">
+                    <button class="btn btn-secondary" id="toggle-contours-btn">Hide Contours</button>
+                    <button class="btn btn-secondary" id="toggle-line-btn">Hide Line</button>
+                </div>
+            </div>
+
+            <!-- Height Legend -->
+            <div class="control-section">
+                <div class="section-title">Elevation</div>
+                <div class="legend">
+                    <div class="legend-item">
+                        <div class="legend-color" style="background: #1a4d2e;"></div>
+                        <span>Low</span>
+                    </div>
+                    <div class="legend-item">
+                        <div class="legend-color" style="background: #2d5a3d;"></div>
+                        <span>↑</span>
+                    </div>
+                    <div class="legend-item">
+                        <div class="legend-color" style="background: #4a7c59;"></div>
+                        <span>↑</span>
+                    </div>
+                    <div class="legend-item">
+                        <div class="legend-color" style="background: #6b9f78;"></div>
+                        <span>High</span>
+                    </div>
+                </div>
+            </div>
+
+            <div class="disclaimer">
+                <strong>⚠️ Simulated Green:</strong> This is a VIDEO GAME simulation with synthetic contours. Not measured from real greens. Putt physics approximate friction/speed effects. For practice visualization only.
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // ============================================
+        // STATE - FIRST
+        // ============================================
+        
+        let holeMarker = null;
+        let ballMarker = null;
+        let placementMode = null;
+        let selectedPreset = null;
+        let puttPower = 50; // 0-100, affects initial velocity (stimpmeter-based)
+        let showContours = true;
+        let showLine = true;
+
+        // ============================================
+        // CONTOUR PRESETS
+        // ============================================
+        
+        const PRESETS = [
+            {
+                id: 'flat',
+                name: 'Flat',
+                heightField: (x, z) => x * 0.001
+            },
+            {
+                id: 'slope-rl',
+                name: 'Slope R→L',
+                heightField: (x, z) => x * 0.08 // sidehill: a putt down the screen breaks left
+            },
+            {
+                id: 'slope-lr',
+                name: 'Slope L→R',
+                heightField: (x, z) => -x * 0.08 // sidehill: a putt down the screen breaks right
+            },
+            {
+                id: 'ridge',
+                name: 'Ridge',
+                heightField: (x, z) => 0.12 - Math.abs(x) * 0.12 // Strong ridge
+            },
+            {
+                id: 'bowl',
+                name: 'Bowl',
+                heightField: (x, z) => Math.abs(x) * 0.12 - 0.06 // Strong bowl
+            },
+            {
+                id: 'double',
+                name: 'S-Curve',
+                heightField: (x, z) => Math.sin(z / 3 * Math.PI * 2) * 0.08 + x * 0.02
+            }
+        ];
+
+        selectedPreset = PRESETS[1]; // Default to slope
+
+        // ============================================
+        // CANVAS SETUP
+        // ============================================
+        
+        const canvas = document.getElementById('green-canvas');
+        const ctx = canvas.getContext('2d');
+        
+        let canvasWidth, canvasHeight;
+        let dpr = window.devicePixelRatio || 1;
+
+        function resizeCanvas() {
+            const container = document.getElementById('canvas-container');
+            dpr = window.devicePixelRatio || 1;
+            
+            canvasWidth = container.clientWidth;
+            canvasHeight = container.clientHeight;
+            
+            canvas.width = canvasWidth * dpr;
+            canvas.height = canvasHeight * dpr;
+            canvas.style.width = canvasWidth + 'px';
+            canvas.style.height = canvasHeight + 'px';
+            
+            ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+            
+            render();
+        }
+
+        // ============================================
+        // COORDINATE SYSTEMS
+        // ============================================
+        
+        // World: -5 to +5 in X and Z (10m x 10m green)
+        // Screen: 0 to canvasWidth/Height
+        
+        function worldToScreen(world) {
+            const screenX = (world.x + 5) / 10 * canvasWidth;
+            const screenY = (world.z + 5) / 10 * canvasHeight;
+            return { x: screenX, y: screenY };
+        }
+
+        function screenToWorld(screen) {
+            const worldX = (screen.x / canvasWidth) * 10 - 5;
+            const worldZ = (screen.y / canvasHeight) * 10 - 5;
+            return { x: worldX, z: worldZ };
+        }
+
+        function distance(p1, p2) {
+            const dx = p2.x - p1.x;
+            const dz = p2.z - p1.z;
+            return Math.sqrt(dx * dx + dz * dz);
+        }
+
+        function normalize(vec) {
+            const len = Math.sqrt(vec.x * vec.x + vec.z * vec.z);
+            if (len < 0.0001) return { x: 0, z: 0 };
+            return { x: vec.x / len, z: vec.z / len };
+        }
+
+        // ============================================
+        // HEIGHT FIELD & GRADIENT
+        // ============================================
+        
+        function getHeight(x, z) {
+            return selectedPreset.heightField(x, z);
+        }
+
+        function getGradient(x, z, delta = 0.02) {
+            return {
+                x: (getHeight(x + delta, z) - getHeight(x - delta, z)) / (2 * delta),
+                z: (getHeight(x, z + delta) - getHeight(x, z - delta)) / (2 * delta)
+            };
+        }
+
+        // ============================================
+        // PUTT PHYSICS SIMULATION
+        // ============================================
+        
+        function launchSpeed(targetDist, power, ball, hole) {
+            const powerFraction = Math.max(0, Math.min(1, power / 100));
+            const mu = 0.14;
+            const g = 9.81;
+            const dist = Math.max(0.25, targetDist);
+            let climb = 0;
+            if (ball && hole) climb = getHeight(hole.x, hole.z) - getHeight(ball.x, ball.z);
+            // Uphill needs extra speed. Downhill still keeps a little pace so soft can die at the cup.
+            const climbEnergy = g * Math.max(0, climb);
+            const help = climb < 0 ? g * climb * 0.35 : 0; // only some of the downhill is "free"
+            const path = dist * 1.08; // break makes the roll longer than the straight line
+            const pace = 0.05 + Math.pow(powerFraction, 2.2) * 1.05;
+            const energy = Math.max(0.2, mu * g * path + climbEnergy + help + mu * g * pace);
+            return Math.sqrt(2 * energy);
+        }
+
+        function distPointToSegment(p, a, b) {
+            const abx = b.x - a.x, abz = b.z - a.z;
+            const apx = p.x - a.x, apz = p.z - a.z;
+            const ab2 = abx * abx + abz * abz;
+            if (ab2 < 1e-12) return Math.hypot(apx, apz);
+            let t = (apx * abx + apz * abz) / ab2;
+            t = Math.max(0, Math.min(1, t));
+            return Math.hypot(p.x - (a.x + abx * t), p.z - (a.z + abz * t));
+        }
+
+        function simulatePuttWithAim(ball, aimAngle, power, maxDist = 22, cupPos = null, cupRadius = 0.08) {
+            const powerFraction = Math.max(0, Math.min(1, power / 100));
+            const mu = 0.14;
+            const g = 9.81;
+            const dt = 0.006;
+            const targetDist = cupPos ? distance(ball, cupPos) : maxDist;
+            // Continuous in power so the slider does not jump.
+            // Soft (~30): small leftover. Hard (~80): clearly past the cup.
+            const v0 = launchSpeed(targetDist, power, ball, cupPos);
+
+            let pos = { x: ball.x, z: ball.z };
+            let velocity = { x: v0 * Math.cos(aimAngle), z: v0 * Math.sin(aimAngle) };
+            const points = [{ x: ball.x, z: ball.z }];
+            let captureIndex = null;
+            let capturedSpeed = null;
+            let time = 0;
+
+            while (time < 18) {
+                const speed = Math.hypot(velocity.x, velocity.z);
+                if (speed < 0.02) break;
+                const prev = { x: pos.x, z: pos.z };
+                const grad = getGradient(pos.x, pos.z);
+                // Down the slope (negative height gradient)
+                const ax = -g * grad.x - mu * g * (velocity.x / speed);
+                const az = -g * grad.z - mu * g * (velocity.z / speed);
+                velocity.x += ax * dt;
+                velocity.z += az * dt;
+                pos.x += velocity.x * dt;
+                pos.z += velocity.z * dt;
+                points.push({ x: pos.x, z: pos.z });
+                if (cupPos && captureIndex === null) {
+                    const seg = distPointToSegment(cupPos, prev, pos);
+                    if (seg < cupRadius || distance(pos, cupPos) < cupRadius) {
+                        captureIndex = points.length - 1;
+                        capturedSpeed = speed;
+                        points[captureIndex] = { x: cupPos.x, z: cupPos.z };
+                    }
+                }
+                time += dt;
+                if (distance(pos, ball) > Math.max(maxDist, targetDist * 3)) break;
+            }
+            return { path: points, captureIndex, capturedSpeed, v0 };
+        }
+
+        function solveAimAngle(ball, hole, power, cupRadius = 0.08) {
+            const naiveAngle = Math.atan2(hole.z - ball.z, hole.x - ball.x);
+            const naiveResult = simulatePuttWithAim(ball, naiveAngle, power, 22, hole, cupRadius);
+            const distBH = Math.max(0.3, distance(ball, hole));
+            const perp = { x: Math.cos(naiveAngle + Math.PI / 2), z: Math.sin(naiveAngle + Math.PI / 2) };
+
+            function pack(angle, result, offsetSigned) {
+                const idx = result.captureIndex;
+                const sinkPath = result.path.slice(0, idx + 1);
+                sinkPath[sinkPath.length - 1] = { x: hole.x, z: hole.z };
+                let overrunPath = null;
+                if (idx < result.path.length - 2) {
+                    const tail = result.path.slice(idx);
+                    const over = distance(tail[tail.length - 1], hole);
+                    if (over >= 0.22) overrunPath = tail;
+                }
+                return {
+                    aimAngle: angle,
+                    aimPoint: { x: hole.x + perp.x * offsetSigned, z: hole.z + perp.z * offsetSigned },
+                    sinkPath,
+                    overrunPath,
+                    naivePath: naiveResult.path,
+                    aimOffset: Math.abs(offsetSigned),
+                    offsetDir: offsetSigned > 0.03 ? 'R' : (offsetSigned < -0.03 ? 'L' : ''),
+                    captureSpeed: result.capturedSpeed,
+                    missed: false
+                };
+            }
+
+            const maxOffset = Math.min(4.2, Math.max(1.2, distBH * 1.1));
+            function rollAt(offset) {
+                const aimPoint = { x: hole.x + perp.x * offset, z: hole.z + perp.z * offset };
+                const angle = Math.atan2(aimPoint.z - ball.z, aimPoint.x - ball.x);
+                const result = simulatePuttWithAim(ball, angle, power, 22, hole, cupRadius);
+                let closest = Infinity;
+                if (result.captureIndex === null) {
+                    for (const pt of result.path) closest = Math.min(closest, distance(pt, hole));
+                } else closest = 0;
+                return { offset, angle, result, closest };
+            }
+            const coarse = 41;
+            let samples = [];
+            for (let i = 0; i < coarse; i++) {
+                samples.push(rollAt(-maxOffset + (2 * maxOffset) * (i / (coarse - 1))));
+            }
+            samples.sort((a, b) => a.closest - b.closest);
+            // Refine around the closest approaches so a narrow cup window is not skipped
+            const seeds = samples.slice(0, 3);
+            let best = null;
+            for (const seed of seeds) {
+                for (let k = -8; k <= 8; k++) {
+                    const offset = seed.offset + k * 0.025;
+                    if (Math.abs(offset) > maxOffset + 0.05) continue;
+                    const hit = rollAt(offset);
+                    if (hit.result.captureIndex === null) continue;
+                    if (!best || Math.abs(hit.offset) < Math.abs(best.offset) - 1e-4) best = hit;
+                }
+            }
+            if (best) return pack(best.angle, best.result, best.offset);
+
+            // No capture: still return the straight roll, marked missed, so the UI can say so
+            return {
+                aimAngle: naiveAngle,
+                aimPoint: hole,
+                sinkPath: naiveResult.path,
+                overrunPath: null,
+                naivePath: naiveResult.path,
+                aimOffset: 0,
+                offsetDir: '',
+                captureSpeed: null,
+                missed: true
+            };
+        }
+
+        function simulatePutt(ball, hole, power) {
+            // Legacy wrapper - solve for aim that sinks
+            const solution = solveAimAngle(ball, hole, power);
+            return solution.sinkPath || solution.naivePath.path || [];
+            const totalDist = distance(ball, hole);
+            if (totalDist < 0.01) return [ball, hole];
+            
+            // TRUE PHYSICS: Power affects initial velocity
+            // Key insight: Soft = LOW velocity → MORE time for slope to deflect
+            //              Hard = HIGH velocity → LESS time for slope to deflect
+            const powerFraction = power / 100; // 0.0 to 1.0
+            
+            // Initial velocity range designed for proper break behavior
+            // Soft (0%): 1.5 m/s → ~2s flight time → MORE break
+            // Hard (100%): 4.5 m/s → ~0.7s flight time → LESS break
+            const v0 = 1.5 + powerFraction * 3.0; // 1.5 to 4.5 m/s
+            
+            // Rolling friction coefficient μ (FIXED - same for all putts)
+            // This is a property of the green surface, not the stroke
+            // Typical golf green: μ ≈ 0.13-0.15
+            const mu = 0.14; // Constant friction
+            
+            // Gravity constant
+            const g = 9.81; // m/s²
+            
+            // Time step for integration
+            const dt = 0.01; // seconds
+            const maxTime = 20; // max simulation time
+            
+            // Initial state
+            let pos = { x: ball.x, z: ball.z };
+            let velocity = { 
+                x: v0 * (hole.x - ball.x) / totalDist,
+                z: v0 * (hole.z - ball.z) / totalDist
+            };
+            
+            const points = [{ ...ball }];
+            let time = 0;
+            let stepCount = 0;
+            
+            while (time < maxTime) {
+                const speed = Math.sqrt(velocity.x * velocity.x + velocity.z * velocity.z);
+                
+                // Stop if ball has stopped
+                if (speed < 0.01) break;
+                
+                // Get surface gradient (slope) at current position
+                // gradient.x = dh/dx, gradient.z = dh/dz
+                const grad = getGradient(pos.x, pos.z);
+                
+                // PHYSICS: Forces on ball
+                // 1. Gravity component along slope: F_gravity = m * g * gradient
+                // 2. Rolling friction opposing motion: F_friction = -μ * m * g * v_hat
+                //    (friction is normal force μ*N times direction, N ≈ m*g on gentle slopes)
+                
+                // Acceleration from gravity (slope effect)
+                // a = g * gradient (mass cancels)
+                const a_gravity = {
+                    x: g * grad.x,
+                    z: g * grad.z
+                };
+                
+                // Acceleration from rolling friction (opposes velocity)
+                // a_friction = -μ * g * (v / |v|)
+                const v_hat = { x: velocity.x / speed, z: velocity.z / speed };
+                const a_friction = {
+                    x: -mu * g * v_hat.x,
+                    z: -mu * g * v_hat.z
+                };
+                
+                // Total acceleration
+                const a_total = {
+                    x: a_gravity.x + a_friction.x,
+                    z: a_gravity.z + a_friction.z
+                };
+                
+                // Update velocity: v(t+dt) = v(t) + a*dt
+                velocity.x += a_total.x * dt;
+                velocity.z += a_total.z * dt;
+                
+                // Update position: x(t+dt) = x(t) + v*dt
+                pos.x += velocity.x * dt;
+                pos.z += velocity.z * dt;
+                
+                // Record point for visualization (every few steps for smooth curve)
+                if (stepCount % 2 === 0) {
+                    points.push({ x: pos.x, z: pos.z });
+                }
+                
+                stepCount++;
+                time += dt;
+                
+                // Safety: stop if ball goes way off course
+                if (distance(pos, ball) > totalDist * 3) break;
+            }
+            
+            // Add final position
+            points.push({ x: pos.x, z: pos.z });
+            
+            return points;
+        }
+
+        // ============================================
+        // SELF-TEST
+        // ============================================
+        
+        function runSelfTest() {
+            console.log('=== PuttGuide Aim Solver Self-Test ===\n');
+            
+            const tests = [
+                { preset: 'slope-lr', name: 'Slope L→R (4m)', ball: { x: -2, z: 0 }, hole: { x: 2, z: 0 } },
+                { preset: 'slope-rl', name: 'Slope R→L (4m)', ball: { x: 2, z: 0 }, hole: { x: -2, z: 0 } },
+                { preset: 'slope-lr', name: 'Slope L→R (1.2m)', ball: { x: -0.6, z: 0 }, hole: { x: 0.6, z: 0 } },
+                { preset: 'slope-rl', name: 'Slope R→L (1.2m)', ball: { x: 0.6, z: 0 }, hole: { x: -0.6, z: 0 } },
+                { preset: 'slope-lr', name: 'Slope L→R (6m)', ball: { x: -3, z: 0 }, hole: { x: 3, z: 0 } }
+            ];
+            
+            let passed = 0;
+            let failed = 0;
+            
+            tests.forEach(test => {
+                // Switch to correct preset
+                const preset = PRESETS.find(p => p.id === test.preset);
+                if (!preset) {
+                    console.error(`Preset ${test.preset} not found!`);
+                    failed++;
+                    return;
+                }
+                selectedPreset = preset;
+                const softSol = solveAimAngle(test.ball, test.hole, 30); // Soft
+                const hardSol = solveAimAngle(test.ball, test.hole, 80); // Hard
+                
+                const softEnd = softSol.sinkPath[softSol.sinkPath.length - 1];
+                const hardEnd = hardSol.sinkPath[hardSol.sinkPath.length - 1];
+                
+                const softMiss = distance(softEnd, test.hole);
+                const hardMiss = distance(hardEnd, test.hole);
+                
+                const softOverrun = softSol.overrunPath ? 
+                    distance(test.hole, softSol.overrunPath[softSol.overrunPath.length - 1]) : 0;
+                const hardOverrun = hardSol.overrunPath ? 
+                    distance(test.hole, hardSol.overrunPath[hardSol.overrunPath.length - 1]) : 0;
+                
+                console.log(`Test: ${test.name}`);
+                console.log(`  Soft: aim ${softSol.aimOffset.toFixed(2)}m ${softSol.offsetDir}, miss ${softMiss.toFixed(3)}m, overrun ${softOverrun.toFixed(2)}m`);
+                console.log(`  Hard: aim ${hardSol.aimOffset.toFixed(2)}m ${hardSol.offsetDir}, miss ${hardMiss.toFixed(3)}m, overrun ${hardOverrun.toFixed(2)}m`);
+                
+                const checks = [
+                    { name: 'Soft sinks', pass: softMiss < 0.054 },
+                    { name: 'Hard sinks', pass: hardMiss < 0.054 },
+                    { name: 'Soft aims more outside', pass: softSol.aimOffset > hardSol.aimOffset },
+                    { name: 'Soft less overrun', pass: softOverrun < hardOverrun }
+                ];
+                
+                let testPassed = true;
+                checks.forEach(check => {
+                    if (!check.pass) {
+                        console.log(`  ❌ ${check.name}`);
+                        testPassed = false;
+                    }
+                });
+                
+                if (testPassed) {
+                    console.log(`  ✅ PASS\n`);
+                    passed++;
+                } else {
+                    console.log(`  ❌ FAIL\n`);
+                    failed++;
+                }
+            });
+            
+            console.log(`=== Results: ${passed}/${tests.length} passed ===`);
+            if (failed === 0) {
+                console.log('🎉 ALL TESTS PASSED');
+            } else {
+                console.log(`⚠️  ${failed} tests failed`);
+            }
+        }
+        
+        // Auto-run self-test on load (can be disabled)
+        window.addEventListener('load', () => {
+            if (window.location.search.includes('test')) {
+                setTimeout(runSelfTest, 1000);
+            }
+        });
+        
+        // ============================================
+        // RENDERING
+        // ============================================
+        
+        function render() {
+            ctx.clearRect(0, 0, canvasWidth, canvasHeight);
+            
+            // Draw 3D-looking green with contours
+            if (showContours) {
+                renderGreenSurface();
+            } else {
+                // Simple gradient background
+                const gradient = ctx.createLinearGradient(0, 0, 0, canvasHeight);
+                gradient.addColorStop(0, '#2d5a3d');
+                gradient.addColorStop(1, '#1a4d2e');
+                ctx.fillStyle = gradient;
+                ctx.fillRect(0, 0, canvasWidth, canvasHeight);
+            }
+            
+            // Draw putt line
+            if (showLine && holeMarker && ballMarker) {
+                renderPuttLine();
+            }
+            
+            // Draw markers
+            if (holeMarker) renderHole(holeMarker);
+            if (ballMarker) renderBall(ballMarker);
+        }
+
+        function renderGreenSurface() {
+            const gridSize = 20; // 20x20 grid
+            const cellWidth = canvasWidth / gridSize;
+            const cellHeight = canvasHeight / gridSize;
+            
+            for (let i = 0; i < gridSize; i++) {
+                for (let j = 0; j < gridSize; j++) {
+                    const screenX = i * cellWidth;
+                    const screenY = j * cellHeight;
+                    
+                    // Convert to world coords (center of cell)
+                    const world = screenToWorld({
+                        x: screenX + cellWidth / 2,
+                        y: screenY + cellHeight / 2
+                    });
+                    
+                    const height = getHeight(world.x, world.z);
+                    
+                    // Color based on height (hillshade effect)
+                    const grad = getGradient(world.x, world.z);
+                    const slope = Math.sqrt(grad.x * grad.x + grad.z * grad.z);
+                    
+                    // Base color from height
+                    const hNorm = (height + 0.03) / 0.06; // Normalize to 0-1
+                    const hClamped = Math.max(0, Math.min(1, hNorm));
+                    
+                    // Green palette (darker = lower, lighter = higher)
+                    const r = Math.floor(26 + hClamped * 81);
+                    const g = Math.floor(77 + hClamped * 82);
+                    const b = Math.floor(46 + hClamped * 74);
+                    
+                    // Hillshade: darken slopes
+                    const shadeFactor = 1 - slope * 2;
+                    const shadeR = Math.floor(r * Math.max(0.5, shadeFactor));
+                    const shadeG = Math.floor(g * Math.max(0.5, shadeFactor));
+                    const shadeB = Math.floor(b * Math.max(0.5, shadeFactor));
+                    
+                    ctx.fillStyle = `rgb(${shadeR}, ${shadeG}, ${shadeB})`;
+                    ctx.fillRect(screenX, screenY, cellWidth + 1, cellHeight + 1);
+                }
+            }
+            
+            // Draw contour lines with STRONGER contrast (console-style)
+            const contourInterval = 0.01; // 1cm contours
+            const contourLevels = [];
+            for (let h = -0.03; h <= 0.03; h += contourInterval) {
+                contourLevels.push(h);
+            }
+            
+            // Draw contour lines with glow effect
+            contourLevels.forEach((level, idx) => {
+                // Every 5th contour is thicker (5cm major contours)
+                const isMajor = idx % 5 === 0;
+                
+                // Scan and draw contours
+                ctx.beginPath();
+                let started = false;
+                
+                for (let j = 0; j < canvasHeight; j += 2) {
+                    for (let i = 0; i < canvasWidth; i += 2) {
+                        const world = screenToWorld({ x: i, y: j });
+                        const h = getHeight(world.x, world.z);
+                        
+                        if (Math.abs(h - level) < 0.002) {
+                            if (!started) {
+                                ctx.moveTo(i, j);
+                                started = true;
+                            } else {
+                                ctx.lineTo(i, j);
+                            }
+                        }
+                    }
+                }
+                
+                // Draw with glow
+                if (isMajor) {
+                    // Major contour: bright with glow
+                    ctx.strokeStyle = 'rgba(255, 255, 255, 0.15)';
+                    ctx.lineWidth = 3;
+                    ctx.stroke();
+                    
+                    ctx.strokeStyle = 'rgba(255, 255, 255, 0.4)';
+                    ctx.lineWidth = 1.5;
+                    ctx.stroke();
+                } else {
+                    // Minor contour: subtle
+                    ctx.strokeStyle = 'rgba(255, 255, 255, 0.12)';
+                    ctx.lineWidth = 1;
+                    ctx.stroke();
+                }
+            });
+            
+            // Grid overlay for depth
+            ctx.strokeStyle = 'rgba(0, 0, 0, 0.1)';
+            ctx.lineWidth = 0.5;
+            for (let i = 0; i <= gridSize; i++) {
+                ctx.beginPath();
+                ctx.moveTo(i * cellWidth, 0);
+                ctx.lineTo(i * cellWidth, canvasHeight);
+                ctx.stroke();
+                
+                ctx.beginPath();
+                ctx.moveTo(0, i * cellHeight);
+                ctx.lineTo(canvasWidth, i * cellHeight);
+                ctx.stroke();
+            }
+        }
+
+        function renderPuttLine() {
+            // SOLVE for aim that sinks the putt
+            const solution = solveAimAngle(ballMarker, holeMarker, puttPower);
+            const sinkPath = solution.sinkPath;
+            const naivePath = solution.naivePath;
+            
+            // Log solution for debugging
+            if (window.logSolution) {
+                const overrunDist = solution.overrunPath ? 
+                    distance(holeMarker, solution.overrunPath[solution.overrunPath.length - 1]) : 0;
+                console.log('Aim solution:', {
+                    aimOffset: solution.aimOffset.toFixed(2) + 'm ' + solution.offsetDir,
+                    aimAngleDeg: (solution.aimAngle * 180 / Math.PI).toFixed(1) + '°',
+                    captureSpeed: solution.captureSpeed ? solution.captureSpeed.toFixed(2) + ' m/s' : 'N/A',
+                    overrun: overrunDist > 0 ? overrunDist.toFixed(1) + 'm past' : 'die at cup',
+                    sinkPathPoints: sinkPath.length
+                });
+            }
+            
+            if (solution.missed) {
+                ctx.fillStyle = 'rgba(255, 180, 80, 0.95)';
+                ctx.font = 'bold 13px sans-serif';
+                ctx.textAlign = 'center';
+                ctx.fillText('This pace does not reach the hole', canvasWidth/2, 28);
+            }
+            if (sinkPath.length < 2) return;
+            if (!solution.missed) sinkPath[sinkPath.length - 1] = { x: holeMarker.x, z: holeMarker.z };
+            
+            const ballScreen = worldToScreen(ballMarker);
+            const holeScreen = worldToScreen(holeMarker);
+            const aimScreen = worldToScreen(solution.aimPoint);
+            
+            // Start-aim marker. The colored line is still the track that falls in the cup.
+            ctx.setLineDash([10, 6]);
+            ctx.strokeStyle = 'rgba(100, 200, 255, 0.85)';
+            ctx.lineWidth = 2;
+            ctx.lineCap = 'round';
+            ctx.beginPath();
+            ctx.moveTo(ballScreen.x, ballScreen.y);
+            ctx.lineTo(aimScreen.x, aimScreen.y);
+            ctx.stroke();
+            ctx.setLineDash([]);
+
+            ctx.fillStyle = 'rgba(100, 200, 255, 0.28)';
+            ctx.beginPath();
+            ctx.arc(aimScreen.x, aimScreen.y, 14, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.strokeStyle = 'rgba(100, 200, 255, 0.95)';
+            ctx.lineWidth = 2;
+            ctx.stroke();
+            ctx.beginPath();
+            ctx.arc(aimScreen.x, aimScreen.y, 4, 0, Math.PI * 2);
+            ctx.fillStyle = 'rgba(100, 200, 255, 1)';
+            ctx.fill();
+
+            ctx.fillStyle = 'rgba(100, 200, 255, 1)';
+            ctx.font = 'bold 11px sans-serif';
+            ctx.textAlign = 'center';
+            ctx.fillText('AIM HERE', aimScreen.x, aimScreen.y - 20);
+            if (solution.aimOffset > 0.05) {
+                ctx.font = 'bold 10px sans-serif';
+                ctx.fillText(`${solution.aimOffset.toFixed(1)}m ${solution.offsetDir}`, aimScreen.x, aimScreen.y + 26);
+            }
+
+            // CONSOLE OVERLAY 3A: Draw OVERRUN path first (faded continuation past hole)
+            // Shows where ball would end if hole wasn't there - visualizes pace
+            if (solution.overrunPath && solution.overrunPath.length > 1) {
+                ctx.setLineDash([8, 4]);
+                ctx.strokeStyle = 'rgba(255, 255, 255, 0.25)';
+                ctx.lineWidth = 3;
+                ctx.lineCap = 'round';
+                ctx.lineJoin = 'round';
+                ctx.beginPath();
+                const overrunStart = worldToScreen(solution.overrunPath[0]);
+                ctx.moveTo(overrunStart.x, overrunStart.y);
+                for (let i = 1; i < solution.overrunPath.length; i++) {
+                    const screen = worldToScreen(solution.overrunPath[i]);
+                    ctx.lineTo(screen.x, screen.y);
+                }
+                ctx.stroke();
+                ctx.setLineDash([]);
+                
+                // Label overrun distance
+                const overrunEnd = solution.overrunPath[solution.overrunPath.length - 1];
+                const overrunDist = distance(holeMarker, overrunEnd);
+                if (overrunDist > 0.3) { // Only label significant overrun
+                    const overrunEndScreen = worldToScreen(overrunEnd);
+                    ctx.fillStyle = 'rgba(255, 255, 255, 0.6)';
+                    ctx.font = 'bold 9px sans-serif';
+                    ctx.textAlign = 'center';
+                    ctx.fillText(`+${overrunDist.toFixed(1)}m past`, overrunEndScreen.x, overrunEndScreen.y - 8);
+                    
+                    // Draw X marker at true stop point
+                    ctx.strokeStyle = 'rgba(255, 255, 255, 0.4)';
+                    ctx.lineWidth = 2;
+                    ctx.beginPath();
+                    ctx.moveTo(overrunEndScreen.x - 6, overrunEndScreen.y - 6);
+                    ctx.lineTo(overrunEndScreen.x + 6, overrunEndScreen.y + 6);
+                    ctx.moveTo(overrunEndScreen.x + 6, overrunEndScreen.y - 6);
+                    ctx.lineTo(overrunEndScreen.x - 6, overrunEndScreen.y + 6);
+                    ctx.stroke();
+                }
+            }
+            
+            // CONSOLE OVERLAY 3B: Draw the solid SINK path (colored by soft/hard)
+            const powerFraction = puttPower / 100;
+            
+            // Soft = warm colors (red/orange), thicker
+            // Hard = cool colors (green/cyan), thinner
+            let strokeColor, lineWidth;
+            if (powerFraction < 0.33) {
+                strokeColor = 'rgba(239, 68, 68, 0.95)'; // Red (soft)
+                lineWidth = 5;
+            } else if (powerFraction < 0.67) {
+                strokeColor = 'rgba(251, 191, 36, 0.95)'; // Yellow (medium)
+                lineWidth = 4;
+            } else {
+                strokeColor = 'rgba(34, 197, 94, 0.95)'; // Green (hard)
+                lineWidth = 3;
+            }
+            
+            // Draw shadow for sink path
+            ctx.strokeStyle = 'rgba(0, 0, 0, 0.4)';
+            ctx.lineWidth = lineWidth + 2;
+            ctx.lineCap = 'round';
+            ctx.lineJoin = 'round';
+            ctx.beginPath();
+            ctx.moveTo(ballScreen.x + 2, ballScreen.y + 2);
+            for (let i = 1; i < sinkPath.length; i++) {
+                const screen = worldToScreen(sinkPath[i]);
+                ctx.lineTo(screen.x + 2, screen.y + 2);
+            }
+            ctx.stroke();
+            
+            // Draw outer glow for sink path
+            ctx.strokeStyle = strokeColor.replace('0.95', '0.3');
+            ctx.lineWidth = lineWidth + 4;
+            ctx.beginPath();
+            ctx.moveTo(ballScreen.x, ballScreen.y);
+            for (let i = 1; i < sinkPath.length; i++) {
+                const screen = worldToScreen(sinkPath[i]);
+                ctx.lineTo(screen.x, screen.y);
+            }
+            ctx.stroke();
+            
+            // Draw main solid sink line
+            ctx.strokeStyle = strokeColor;
+            ctx.lineWidth = lineWidth;
+            ctx.beginPath();
+            ctx.moveTo(ballScreen.x, ballScreen.y);
+            for (let i = 1; i < sinkPath.length; i++) {
+                const screen = worldToScreen(sinkPath[i]);
+                ctx.lineTo(screen.x, screen.y);
+            }
+            ctx.stroke();
+            
+            // Label "SINK"
+            const sinkLabelIdx = Math.floor(sinkPath.length * 0.6);
+            if (sinkLabelIdx < sinkPath.length) {
+                const sinkLabelScreen = worldToScreen(sinkPath[sinkLabelIdx]);
+                ctx.fillStyle = strokeColor;
+                ctx.font = 'bold 11px sans-serif';
+                ctx.textAlign = 'center';
+                const label = powerFraction < 0.33 ? 'SOFT SINK' : 
+                             powerFraction > 0.67 ? 'FIRM SINK' : 'SINK';
+                ctx.fillText(label, sinkLabelScreen.x, sinkLabelScreen.y - 10);
+            }
+            
+            // CONSOLE OVERLAY: Speed beads along sink path
+            const beadInterval = Math.max(1, Math.floor(sinkPath.length / 15));
+            for (let i = 0; i < sinkPath.length; i += beadInterval) {
+                const screen = worldToScreen(sinkPath[i]);
+                const progress = i / (sinkPath.length - 1);
+                
+                // Bead size decreases along path (ball slowing)
+                const beadSize = 4 - progress * 2;
+                
+                // Bead color based on soft/hard
+                const beadColor = powerFraction < 0.5 ? 
+                    `rgba(255, 255, 255, ${0.8 - progress * 0.4})` :
+                    `rgba(200, 255, 200, ${0.8 - progress * 0.4})`;
+                
+                ctx.fillStyle = beadColor;
+                ctx.beginPath();
+                ctx.arc(screen.x, screen.y, beadSize, 0, Math.PI * 2);
+                ctx.fill();
+            }
+            
+            // Draw direction arrows at key points along sink path
+            const arrowIndices = [
+                Math.floor(sinkPath.length * 0.2),
+                Math.floor(sinkPath.length * 0.5),
+                Math.floor(sinkPath.length * 0.8)
+            ];
+            
+            ctx.fillStyle = 'rgba(255, 255, 255, 0.9)';
+            arrowIndices.forEach(idx => {
+                if (idx >= sinkPath.length - 1) return;
+                
+                const p1 = worldToScreen(sinkPath[idx]);
+                const p2 = worldToScreen(sinkPath[idx + 1]);
+                
+                const dx = p2.x - p1.x;
+                const dy = p2.y - p1.y;
+                const angle = Math.atan2(dy, dx);
+                
+                ctx.save();
+                ctx.translate(p1.x, p1.y);
+                ctx.rotate(angle);
+                
+                // Arrow with outline
+                ctx.strokeStyle = 'rgba(0, 0, 0, 0.5)';
+                ctx.lineWidth = 2;
+                ctx.beginPath();
+                ctx.moveTo(10, 0);
+                ctx.lineTo(0, -5);
+                ctx.lineTo(0, 5);
+                ctx.closePath();
+                ctx.stroke();
+                ctx.fill();
+                
+                ctx.restore();
+            });
+        }
+
+        function renderHole(marker) {
+            const screen = worldToScreen(marker);
+            
+            // Shadow
+            ctx.fillStyle = 'rgba(0, 0, 0, 0.4)';
+            ctx.beginPath();
+            ctx.arc(screen.x + 2, screen.y + 2, 14, 0, Math.PI * 2);
+            ctx.fill();
+            
+            // Cup
+            ctx.fillStyle = 'white';
+            ctx.beginPath();
+            ctx.arc(screen.x, screen.y, 13, 0, Math.PI * 2);
+            ctx.fill();
+            
+            ctx.strokeStyle = '#333';
+            ctx.lineWidth = 3;
+            ctx.stroke();
+            
+            // Inner hole
+            ctx.fillStyle = '#1a1a1a';
+            ctx.beginPath();
+            ctx.arc(screen.x, screen.y, 7, 0, Math.PI * 2);
+            ctx.fill();
+            
+            // Flag pole
+            ctx.strokeStyle = '#333';
+            ctx.lineWidth = 2;
+            ctx.beginPath();
+            ctx.moveTo(screen.x, screen.y);
+            ctx.lineTo(screen.x, screen.y - 35);
+            ctx.stroke();
+            
+            // Flag
+            ctx.fillStyle = '#ef4444';
+            ctx.strokeStyle = '#991b1b';
+            ctx.lineWidth = 1;
+            ctx.beginPath();
+            ctx.moveTo(screen.x, screen.y - 35);
+            ctx.lineTo(screen.x + 20, screen.y - 28);
+            ctx.lineTo(screen.x, screen.y - 21);
+            ctx.closePath();
+            ctx.fill();
+            ctx.stroke();
+        }
+
+        function renderBall(marker) {
+            const screen = worldToScreen(marker);
+            
+            // Shadow
+            ctx.fillStyle = 'rgba(0, 0, 0, 0.4)';
+            ctx.beginPath();
+            ctx.arc(screen.x + 2, screen.y + 2, 13, 0, Math.PI * 2);
+            ctx.fill();
+            
+            // Glow
+            ctx.fillStyle = 'rgba(251, 191, 36, 0.4)';
+            ctx.beginPath();
+            ctx.arc(screen.x, screen.y, 15, 0, Math.PI * 2);
+            ctx.fill();
+            
+            // Ball
+            ctx.fillStyle = '#fbbf24';
+            ctx.beginPath();
+            ctx.arc(screen.x, screen.y, 12, 0, Math.PI * 2);
+            ctx.fill();
+            
+            ctx.strokeStyle = 'white';
+            ctx.lineWidth = 2;
+            ctx.stroke();
+            
+            // Highlight
+            ctx.fillStyle = 'rgba(255, 255, 255, 0.7)';
+            ctx.beginPath();
+            ctx.arc(screen.x - 4, screen.y - 4, 3, 0, Math.PI * 2);
+            ctx.fill();
+        }
+
+        // ============================================
+        // UI UPDATES
+        // ============================================
+        
+        function updateUI() {
+            const hasMarkers = holeMarker && ballMarker;
+            
+            document.getElementById('distance-section').style.display = hasMarkers ? 'block' : 'none';
+            
+            if (hasMarkers) {
+                const dist = distance(ballMarker, holeMarker);
+                document.getElementById('distance-value').textContent = dist.toFixed(1) + 'm';
+                
+                const velocity = launchSpeed(dist, puttPower, ballMarker, holeMarker);
+                const powerFraction = puttPower / 100;
+                let puttType = 'Soft';
+                if (powerFraction > 0.67) puttType = 'Hard';
+                else if (powerFraction > 0.33) puttType = 'Medium';
+                
+                document.getElementById('info-overlay').textContent = 
+                    `${dist.toFixed(1)}m · ${puttType} (${velocity.toFixed(1)} m/s) · ${selectedPreset.name}`;
+            } else {
+                document.getElementById('info-overlay').textContent = 'Tap to place hole and ball';
+            }
+            
+            document.getElementById('power-value').textContent = puttPower + '%';
+            
+            // Calculate actual speed using distance-aware model
+            const powerFraction = puttPower / 100;
+            const velocity = (ballMarker && holeMarker)
+                ? launchSpeed(distance(ballMarker, holeMarker), puttPower, ballMarker, holeMarker)
+                : launchSpeed(3, puttPower);
+            let label = `Soft (${velocity.toFixed(1)} m/s)`;
+            if (powerFraction > 0.67) label = `Hard (${velocity.toFixed(1)} m/s)`;
+            else if (powerFraction > 0.33) label = `Medium (${velocity.toFixed(1)} m/s)`;
+            document.getElementById('power-label').textContent = label;
+            
+            document.getElementById('toggle-contours-btn').textContent = 
+                showContours ? 'Hide Contours' : 'Show Contours';
+            document.getElementById('toggle-line-btn').textContent = 
+                showLine ? 'Hide Line' : 'Show Line';
+            
+            render();
+        }
+
+        function populatePresets() {
+            const grid = document.getElementById('preset-grid');
+            grid.innerHTML = '';
+            
+            PRESETS.forEach(preset => {
+                const btn = document.createElement('button');
+                btn.className = 'preset-btn';
+                if (preset.id === selectedPreset.id) btn.classList.add('active');
+                btn.textContent = preset.name;
+                btn.onclick = () => {
+                    selectedPreset = preset;
+                    document.querySelectorAll('.preset-btn').forEach(b => b.classList.remove('active'));
+                    btn.classList.add('active');
+                    updateUI();
+                };
+                grid.appendChild(btn);
+            });
+        }
+
+        // ============================================
+        // EVENT HANDLERS
+        // ============================================
+        
+        function handleCanvasTap(e) {
+            if (!placementMode) return;
+            
+            e.preventDefault();
+            
+            const rect = canvas.getBoundingClientRect();
+            const screenX = (e.clientX || e.touches?.[0]?.clientX || 0) - rect.left;
+            const screenY = (e.clientY || e.touches?.[0]?.clientY || 0) - rect.top;
+            
+            const world = screenToWorld({ x: screenX, y: screenY });
+            
+            if (placementMode === 'hole') {
+                holeMarker = world;
+            } else if (placementMode === 'ball') {
+                ballMarker = world;
+            }
+            
+            placementMode = null;
+            updateUI();
+        }
+
+        if ('PointerEvent' in window) {
+            canvas.addEventListener('pointerdown', handleCanvasTap);
+        } else {
+            canvas.addEventListener('touchstart', handleCanvasTap);
+            canvas.addEventListener('click', handleCanvasTap);
+        }
+
+        document.getElementById('place-hole-btn').addEventListener('click', () => {
+            placementMode = 'hole';
+        });
+
+        document.getElementById('place-ball-btn').addEventListener('click', () => {
+            placementMode = 'ball';
+        });
+
+        document.getElementById('reset-btn').addEventListener('click', () => {
+            holeMarker = null;
+            ballMarker = null;
+            placementMode = null;
+            updateUI();
+        });
+
+        document.getElementById('power-slider').addEventListener('input', (e) => {
+            puttPower = parseInt(e.target.value);
+            updateUI();
+        });
+
+        document.getElementById('toggle-contours-btn').addEventListener('click', () => {
+            showContours = !showContours;
+            updateUI();
+        });
+
+        document.getElementById('toggle-line-btn').addEventListener('click', () => {
+            showLine = !showLine;
+            updateUI();
+        });
+
+        // ============================================
+        // INITIALIZATION - AT END
+        // ============================================
+        
+        window.addEventListener('resize', resizeCanvas);
+        populatePresets();
+        resizeCanvas();
+        updateUI();
+    </script>
+</body>
+</html>
