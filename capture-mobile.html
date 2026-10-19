@@ -263,6 +263,7 @@
 
     <script>
         // Local Safari fixes: binary Polycam PLY, real 0-height cells, file picker, samples.
+        // Build: 2026-10-18 ground-plane verdict fix
         var PLY_TYPES = {
             char: 1, int8: 1, uchar: 1, uint8: 1,
             short: 2, int16: 2, ushort: 2, uint16: 2,
@@ -383,35 +384,238 @@
             return points;
         }
 
-        function alignToGroundPlane(points) {
-            var minX = Infinity, maxX = -Infinity;
-            var minY = Infinity, maxY = -Infinity;
-            var minZ = Infinity, maxZ = -Infinity;
-            for (var i = 0; i < points.length; i++) {
-                var p = points[i];
-                if (p.x < minX) minX = p.x;
-                if (p.x > maxX) maxX = p.x;
-                if (p.y < minY) minY = p.y;
-                if (p.y > maxY) maxY = p.y;
-                if (p.z < minZ) minZ = p.z;
-                if (p.z > maxZ) maxZ = p.z;
+        // ANALYSIS-START
+        // Ground-plane analysis (Oct 18 fix). Old code picked the axis with the
+        // smallest extent as "height", so a room scan used floor depth as height.
+        // Now: RANSAC-fit the dominant plane, snap its normal to the scanner's
+        // gravity axis (ARKit/LiDARo = Y up, some exports = Z up), measure height
+        // along that up axis, and flag scans with walls/furniture as not-a-green.
+        function makeRng(seed) {
+            var s = seed >>> 0;
+            return function () {
+                s = (s + 0x6D2B79F5) >>> 0;
+                var t = s;
+                t = Math.imul(t ^ (t >>> 15), t | 1);
+                t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+                return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+            };
+        }
+
+        function percentile(sorted, p) {
+            if (!sorted.length) return 0;
+            var idx = (sorted.length - 1) * p;
+            var lo = Math.floor(idx), hi = Math.ceil(idx);
+            return sorted[lo] + (sorted[hi] - sorted[lo]) * (idx - lo);
+        }
+
+        function getAxis(p, a) { return a === 0 ? p.x : (a === 1 ? p.y : p.z); }
+
+        // Least-squares plane h = a*u + b*v + c on (u, v, h) triples.
+        function fitPlaneLSQ(us, vs, hs, idxs) {
+            var n = idxs.length;
+            var su = 0, sv = 0, sh = 0, suu = 0, svv = 0, suv = 0, suh = 0, svh = 0;
+            for (var k = 0; k < n; k++) {
+                var i = idxs[k];
+                var u = us[i], v = vs[i], h = hs[i];
+                su += u; sv += v; sh += h;
+                suu += u * u; svv += v * v; suv += u * v; suh += u * h; svh += v * h;
             }
-            var rangeX = maxX - minX;
-            var rangeY = maxY - minY;
-            var rangeZ = maxZ - minZ;
-            var aligned = new Array(points.length);
-            for (var j = 0; j < points.length; j++) {
-                var q = points[j];
-                if (rangeZ <= rangeX && rangeZ <= rangeY) {
-                    aligned[j] = { x: q.x - minX, y: q.y - minY, z: q.z - minZ };
-                } else if (rangeY <= rangeX && rangeY <= rangeZ) {
-                    aligned[j] = { x: q.x - minX, z: q.z - minZ, y: q.y - minY };
-                } else {
-                    aligned[j] = { z: q.y - minY, y: q.z - minZ, x: q.x - minX };
+            var mu = su / n, mv = sv / n, mh = sh / n;
+            var cuu = suu / n - mu * mu, cvv = svv / n - mv * mv, cuv = suv / n - mu * mv;
+            var cuh = suh / n - mu * mh, cvh = svh / n - mv * mh;
+            var det = cuu * cvv - cuv * cuv;
+            var a = 0, b = 0;
+            if (Math.abs(det) > 1e-12) {
+                a = (cuh * cvv - cvh * cuv) / det;
+                b = (cvh * cuu - cuh * cuv) / det;
+            }
+            return { a: a, b: b, c: mh - a * mu - b * mv };
+        }
+
+        // RANSAC for the dominant plane in 3D; returns unit normal.
+        function ransacPlane(points, rng, iters, thresh) {
+            var n = points.length;
+            var sampleIdx = [];
+            var maxEval = Math.min(n, 4000);
+            for (var s = 0; s < maxEval; s++) sampleIdx.push(Math.floor(rng() * n));
+            var best = null, bestCount = -1;
+            for (var it = 0; it < iters; it++) {
+                var p1 = points[Math.floor(rng() * n)];
+                var p2 = points[Math.floor(rng() * n)];
+                var p3 = points[Math.floor(rng() * n)];
+                var ux = p2.x - p1.x, uy = p2.y - p1.y, uz = p2.z - p1.z;
+                var vx = p3.x - p1.x, vy = p3.y - p1.y, vz = p3.z - p1.z;
+                var nx = uy * vz - uz * vy, ny = uz * vx - ux * vz, nz = ux * vy - uy * vx;
+                var len = Math.sqrt(nx * nx + ny * ny + nz * nz);
+                if (len < 1e-9) continue;
+                nx /= len; ny /= len; nz /= len;
+                var d = -(nx * p1.x + ny * p1.y + nz * p1.z);
+                var count = 0;
+                for (var k = 0; k < sampleIdx.length; k++) {
+                    var q = points[sampleIdx[k]];
+                    if (Math.abs(nx * q.x + ny * q.y + nz * q.z + d) < thresh) count++;
+                }
+                if (count > bestCount) { bestCount = count; best = { nx: nx, ny: ny, nz: nz }; }
+            }
+            return { normal: best || { nx: 0, ny: 1, nz: 0 }, inlierFrac: bestCount / sampleIdx.length };
+        }
+
+        function analyzeScan(points, resolution) {
+            if (!resolution) resolution = 40;
+            var rng = makeRng(12345);
+            var r = ransacPlane(points, rng, 300, 0.03);
+            var nrm = r.normal;
+            var comps = [Math.abs(nrm.nx), Math.abs(nrm.ny), Math.abs(nrm.nz)];
+            // Prefer Y up (ARKit convention), but use whichever axis the ground
+            // plane actually faces. Snap only if within ~25 degrees of an axis.
+            var upAxis = 1;
+            if (comps[2] > comps[upAxis]) upAxis = 2;
+            if (comps[0] > comps[upAxis]) upAxis = 0;
+            var gravityKnown = comps[upAxis] > Math.cos(25 * Math.PI / 180);
+            var uAxis = upAxis === 0 ? 1 : 0;
+            var vAxis = upAxis === 2 ? 1 : 2;
+
+            var n = points.length;
+            var us = new Float64Array(n), vs = new Float64Array(n), hs = new Float64Array(n);
+            if (gravityKnown) {
+                for (var i = 0; i < n; i++) {
+                    us[i] = getAxis(points[i], uAxis);
+                    vs[i] = getAxis(points[i], vAxis);
+                    hs[i] = getAxis(points[i], upAxis);
+                }
+            } else {
+                // No axis matches: build a frame from the plane normal itself.
+                var ax = Math.abs(nrm.nx) < 0.9 ? [1, 0, 0] : [0, 1, 0];
+                var e1 = [nrm.ny * ax[2] - nrm.nz * ax[1], nrm.nz * ax[0] - nrm.nx * ax[2], nrm.nx * ax[1] - nrm.ny * ax[0]];
+                var l1 = Math.sqrt(e1[0] * e1[0] + e1[1] * e1[1] + e1[2] * e1[2]);
+                e1 = [e1[0] / l1, e1[1] / l1, e1[2] / l1];
+                var e2 = [nrm.ny * e1[2] - nrm.nz * e1[1], nrm.nz * e1[0] - nrm.nx * e1[2], nrm.nx * e1[1] - nrm.ny * e1[0]];
+                for (var i2 = 0; i2 < n; i2++) {
+                    var p = points[i2];
+                    us[i2] = p.x * e1[0] + p.y * e1[1] + p.z * e1[2];
+                    vs[i2] = p.x * e2[0] + p.y * e2[1] + p.z * e2[2];
+                    hs[i2] = p.x * nrm.nx + p.y * nrm.ny + p.z * nrm.nz;
                 }
             }
-            return aligned;
+            // Orient so most off-plane stuff (furniture, walls) sits above ground.
+            var all = [];
+            for (var a0 = 0; a0 < n; a0++) all.push(a0);
+            var plane = fitPlaneLSQ(us, vs, hs, all);
+            // Refine plane on near-plane points (iteratively shrink the band).
+            var bands = [0.5, 0.15, 0.06];
+            for (var bi = 0; bi < bands.length; bi++) {
+                var sel = [];
+                for (var j = 0; j < n; j++) {
+                    var res0 = hs[j] - (plane.a * us[j] + plane.b * vs[j] + plane.c);
+                    if (Math.abs(res0) < bands[bi]) sel.push(j);
+                }
+                if (sel.length < Math.max(50, n * 0.05)) break;
+                plane = fitPlaneLSQ(us, vs, hs, sel);
+            }
+            var resid = new Float64Array(n);
+            var above = 0, below = 0;
+            for (var k = 0; k < n; k++) {
+                resid[k] = hs[k] - (plane.a * us[k] + plane.b * vs[k] + plane.c);
+                if (resid[k] > 0.2) above++;
+                if (resid[k] < -0.2) below++;
+            }
+            if (below > above) {
+                for (var k2 = 0; k2 < n; k2++) { hs[k2] = -hs[k2]; resid[k2] = -resid[k2]; }
+                plane = { a: -plane.a, b: -plane.b, c: -plane.c };
+            }
+            var offPlane = 0;
+            for (var k3 = 0; k3 < n; k3++) if (Math.abs(resid[k3]) > 0.15) offPlane++;
+            var offPlaneFrac = offPlane / n;
+            var planeTiltPct = Math.sqrt(plane.a * plane.a + plane.b * plane.b) * 100;
+
+            // Robust height range: heights along the up axis, 2nd-98th percentile.
+            var hSorted = Array.prototype.slice.call(hs).sort(function (x, y) { return x - y; });
+            var h2 = percentile(hSorted, 0.02), h98 = percentile(hSorted, 0.98);
+            var robustRange = h98 - h2;
+
+            // Area = robust extent within the ground plane (1st-99th percentile).
+            var uS = Array.prototype.slice.call(us).sort(function (x, y) { return x - y; });
+            var vS = Array.prototype.slice.call(vs).sort(function (x, y) { return x - y; });
+            var u0 = percentile(uS, 0.01), u1 = percentile(uS, 0.99);
+            var v0 = percentile(vS, 0.01), v1 = percentile(vS, 0.99);
+            var width = u1 - u0, height = v1 - v0;
+
+            // Height grid (cell median of points inside the robust bounds).
+            var cells = [];
+            for (var c0 = 0; c0 < resolution * resolution; c0++) cells.push([]);
+            var cw = (width / resolution) || 1, ch = (height / resolution) || 1;
+            for (var m = 0; m < n; m++) {
+                if (hs[m] < h2 || hs[m] > h98) continue;
+                var col = Math.floor((us[m] - u0) / cw);
+                var row = Math.floor((vs[m] - v0) / ch);
+                if (col < 0 || row < 0 || col >= resolution || row >= resolution) continue;
+                cells[row * resolution + col].push(hs[m] - h2);
+            }
+            var grid = [];
+            for (var gr = 0; gr < resolution; gr++) {
+                grid[gr] = [];
+                for (var gc = 0; gc < resolution; gc++) {
+                    var arr = cells[gr * resolution + gc];
+                    if (!arr.length) { grid[gr][gc] = null; continue; }
+                    arr.sort(function (x, y) { return x - y; });
+                    grid[gr][gc] = percentile(arr, 0.5);
+                }
+            }
+            var filled = [];
+            for (var f0 = 0; f0 < resolution; f0++) filled[f0] = grid[f0].slice();
+            for (var fi = 0; fi < resolution; fi++) {
+                for (var fj = 0; fj < resolution; fj++) {
+                    if (grid[fi][fj] !== null) continue;
+                    var nearest = 0, minDist = Infinity;
+                    for (var si = 0; si < resolution; si++) {
+                        for (var sj = 0; sj < resolution; sj++) {
+                            if (grid[si][sj] === null) continue;
+                            var dd = (si - fi) * (si - fi) + (sj - fj) * (sj - fj);
+                            if (dd < minDist) { minDist = dd; nearest = grid[si][sj]; }
+                        }
+                    }
+                    filled[fi][fj] = nearest;
+                }
+            }
+            // Average slope between neighbouring measured cells only.
+            var totalGrad = 0, gcount = 0;
+            for (var ii = 0; ii < resolution; ii++) {
+                for (var jj = 0; jj < resolution; jj++) {
+                    if (grid[ii][jj] === null) continue;
+                    if (jj + 1 < resolution && grid[ii][jj + 1] !== null) {
+                        totalGrad += Math.abs(grid[ii][jj + 1] - grid[ii][jj]) / cw; gcount++;
+                    }
+                    if (ii + 1 < resolution && grid[ii + 1][jj] !== null) {
+                        totalGrad += Math.abs(grid[ii + 1][jj] - grid[ii][jj]) / ch; gcount++;
+                    }
+                }
+            }
+            var avgSlope = gcount ? (totalGrad / gcount) * 100 : 0;
+
+            // Verdict for a putting green (typical slopes 1-4%).
+            var verdict, reasons = [];
+            if (robustRange > 0.5) reasons.push((robustRange * 100).toFixed(0) + ' cm of height difference (a green is a few cm to ~40 cm)');
+            if (avgSlope > 10) reasons.push('average slope ' + avgSlope.toFixed(0) + '% (greens are about 1-4%)');
+            if (offPlaneFrac > 0.08) reasons.push(Math.round(offPlaneFrac * 100) + '% of points stick up more than 15 cm off the ground');
+            if (gravityKnown && planeTiltPct > 10) reasons.push('main surface tilts ' + planeTiltPct.toFixed(0) + '%');
+            if (!gravityKnown) reasons.push('could not tell which way is up');
+            if (reasons.length) verdict = 'not-green';
+            else if (robustRange < 0.01) verdict = 'too-flat';
+            else if (robustRange > 0.4) verdict = 'check';
+            else verdict = 'good';
+
+            return {
+                verdict: verdict, reasons: reasons,
+                upAxis: gravityKnown ? 'xyz'.charAt(upAxis) : 'plane-normal',
+                gravityKnown: gravityKnown,
+                width: width, height: height,
+                range: robustRange, avgSlope: avgSlope,
+                offPlaneFrac: offPlaneFrac, planeTiltPct: planeTiltPct,
+                ransacInlierFrac: r.inlierFrac,
+                grid: filled
+            };
         }
+        // ANALYSIS-END
 
         function createHeightGrid(points, resolution) {
             if (!resolution) resolution = 40;
@@ -563,14 +767,10 @@
                     throw new Error('Too few points (' + points.length + '). Scan might be incomplete.');
                 }
 
-                document.getElementById('process-status').textContent = 'Aligning to ground plane...';
+                document.getElementById('process-status').textContent = 'Finding the ground plane...';
                 await paintLater();
-                var aligned = alignToGroundPlane(points);
-
-                document.getElementById('process-status').textContent = 'Creating height grid...';
-                await paintLater();
-                var built = createHeightGrid(aligned);
-                var grid = built.grid, width = built.width, height = built.height;
+                var an = analyzeScan(points);
+                var grid = an.grid, width = an.width, height = an.height;
 
                 document.getElementById('step-processing').classList.add('hidden');
                 document.getElementById('step-preview').classList.remove('hidden');
@@ -578,49 +778,46 @@
 
                 var canvas = document.getElementById('preview-canvas');
                 var drawn = drawContourPreview(canvas, grid, width, height);
-                var minH = drawn.minH, maxH = drawn.maxH, range = drawn.range;
+                var minH = drawn.minH, maxH = drawn.maxH;
+                var range = an.range;
+                var avgSlope = an.avgSlope;
 
                 document.getElementById('scan-metrics').classList.remove('hidden');
                 document.getElementById('metric-area').textContent =
                     width.toFixed(1) + 'm × ' + height.toFixed(1) + 'm';
                 document.getElementById('metric-range').textContent =
                     (range * 100).toFixed(1) + ' cm';
-
-                var totalGrad = 0;
-                var count = 0;
-                var res = grid.length;
-                for (var i = 0; i < res - 1; i++) {
-                    for (var j = 0; j < res - 1; j++) {
-                        var dx = Math.abs(grid[i][j + 1] - grid[i][j]);
-                        var dy = Math.abs(grid[i + 1][j] - grid[i][j]);
-                        totalGrad += dx + dy;
-                        count += 2;
-                    }
-                }
-                var cellM = ((width / res) + (height / res)) / 2 || 1;
-                var avgSlope = (totalGrad / count) / cellM * 100;
                 document.getElementById('metric-slope').textContent =
                     avgSlope.toFixed(1) + '% avg';
 
                 var resultDiv = document.getElementById('result-status');
-                if (range < 0.01) {
+                var upNote = an.gravityKnown ? ('Up axis: ' + an.upAxis.toUpperCase() + '. ') : '';
+                if (an.verdict === 'not-green') {
                     resultDiv.className = 'status status-bad';
                     resultDiv.innerHTML =
-                        '<strong>⚠️ Scan looks too flat!</strong><br>' +
-                        'Height variation is only ' + (range * 100).toFixed(1) + 'cm.<br>' +
+                        '<strong>❌ Not a green: walls, furniture, or objects in the scan</strong><br>' +
+                        'Found ' + an.reasons.join('; ') + '.<br>' +
+                        'Scan only the grass around the putt, walking slowly, and keep people, bags and the flagstick out of view.';
+                } else if (an.verdict === 'too-flat') {
+                    resultDiv.className = 'status status-bad';
+                    resultDiv.innerHTML =
+                        '<strong>⚠️ Too flat / not enough detail</strong><br>' +
+                        'Height variation is only ' + (range * 100).toFixed(1) + ' cm.<br>' +
                         'Try scanning again before leaving the green.';
-                } else if (range < 0.03) {
+                } else if (an.verdict === 'check') {
                     resultDiv.className = 'status status-warn';
                     resultDiv.innerHTML =
-                        '<strong>⚠️ Low slope detected</strong><br>' +
-                        'Height variation is ' + (range * 100).toFixed(1) + 'cm.<br>' +
-                        'If the green looks flatter in contours than reality, rescan.';
+                        '<strong>⚠️ Unusually large height change</strong><br>' +
+                        (range * 100).toFixed(1) + ' cm of variation is a lot for a putting green.<br>' +
+                        'Check the contours for objects in the scan before you leave.';
                     document.getElementById('download-btn').classList.remove('hidden');
                 } else {
                     resultDiv.className = 'status status-good';
                     resultDiv.innerHTML =
                         '<strong>✅ Good scan!</strong><br>' +
-                        'Contours show ' + (range * 100).toFixed(1) + 'cm of variation.<br>' +
+                        'Contours show ' + (range * 100).toFixed(1) + ' cm of variation, ' +
+                        avgSlope.toFixed(1) + '% average slope.<br>' +
+                        '<small>' + upNote + '</small>' +
                         'You can leave the green now.';
                     document.getElementById('download-btn').classList.remove('hidden');
                 }
