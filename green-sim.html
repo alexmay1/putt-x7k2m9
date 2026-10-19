@@ -63,6 +63,7 @@
             width: 100%;
             height: 100%;
             cursor: crosshair;
+            touch-action: none;
         }
 
         #info-overlay {
@@ -265,18 +266,27 @@
         #controls::-webkit-scrollbar {
             width: 0px;
         }
+        .preset-btn.wide { grid-column: span 3; padding: 12px 6px; font-size: 12px; }
+        .preset-btn.real { border-color: rgba(100, 200, 255, 0.5); }
+        .preset-btn.real.active { background: rgba(100, 200, 255, 0.25); border-color: #64c8ff; }
+        .green-info { font-size: 11px; color: rgba(255,255,255,0.75); line-height: 1.4; margin-top: 8px; }
+        .green-info b { color: #64c8ff; }
+        #toast { position: absolute; bottom: 12px; left: 50%; transform: translateX(-50%); background: rgba(0,0,0,0.85);
+                 padding: 8px 14px; border-radius: 8px; font-size: 12px; pointer-events: none; display: none;
+                 border: 1px solid rgba(251, 191, 36, 0.5); max-width: 90%; text-align: center; }
     </style>
 </head>
 <body>
     <div id="app">
         <header>
             <h1>🏌️ Green Simulator</h1>
-            <span class="badge">3D Contour View</span>
+            <span class="badge" id="header-badge">3D Contour View</span>
         </header>
 
         <div id="canvas-container">
             <canvas id="green-canvas"></canvas>
             <div id="info-overlay">Tap to place hole and ball</div>
+            <div id="toast"></div>
         </div>
 
         <div id="controls">
@@ -297,10 +307,12 @@
                 </div>
             </div>
 
-            <!-- Green Preset -->
+            <!-- Green choice -->
             <div class="control-section">
-                <div class="section-title">Green Type</div>
+                <div class="section-title">Green</div>
                 <div class="preset-grid" id="preset-grid"></div>
+                <input type="file" id="scan-file" style="display:none">
+                <div class="green-info" id="green-info"></div>
             </div>
 
             <!-- Putt Physics -->
@@ -308,10 +320,17 @@
                 <div class="section-title">Putt Power / Speed</div>
                 <div class="slider-control">
                     <div class="slider-label">
-                        <span id="power-label">Medium (10 Stimp)</span>
+                        <span id="power-label">Medium</span>
                         <span class="slider-value" id="power-value">50%</span>
                     </div>
                     <input type="range" id="power-slider" min="0" max="100" value="50">
+                </div>
+                <div class="slider-control">
+                    <div class="slider-label">
+                        <span>Green speed (Stimpmeter)</span>
+                        <span class="slider-value" id="stimp-value">10</span>
+                    </div>
+                    <input type="range" id="stimp-slider" min="6" max="14" step="0.5" value="10">
                 </div>
                 <div class="legend">
                     <div class="legend-item">
@@ -331,134 +350,250 @@
                 <div class="btn-group">
                     <button class="btn btn-secondary" id="toggle-contours-btn">Hide Contours</button>
                     <button class="btn btn-secondary" id="toggle-line-btn">Hide Line</button>
+                    <button class="btn btn-secondary" id="fit-view-btn">⤢ Whole green</button>
                 </div>
+                <div class="green-info">Pinch to zoom, drag to move the green.</div>
             </div>
 
             <!-- Height Legend -->
             <div class="control-section">
                 <div class="section-title">Elevation</div>
                 <div class="legend">
-                    <div class="legend-item">
-                        <div class="legend-color" style="background: #1a4d2e;"></div>
-                        <span>Low</span>
-                    </div>
-                    <div class="legend-item">
-                        <div class="legend-color" style="background: #2d5a3d;"></div>
-                        <span>↑</span>
-                    </div>
-                    <div class="legend-item">
-                        <div class="legend-color" style="background: #4a7c59;"></div>
-                        <span>↑</span>
-                    </div>
-                    <div class="legend-item">
-                        <div class="legend-color" style="background: #6b9f78;"></div>
-                        <span>High</span>
-                    </div>
+                    <div class="legend-item"><div class="legend-color" style="background: #1a4d2e;"></div><span>Low</span></div>
+                    <div class="legend-item"><div class="legend-color" style="background: #2d5a3d;"></div><span>↑</span></div>
+                    <div class="legend-item"><div class="legend-color" style="background: #4a7c59;"></div><span>↑</span></div>
+                    <div class="legend-item"><div class="legend-color" style="background: #6b9f78;"></div><span>High</span></div>
+                    <div class="legend-item"><span style="color:#fff;">➜</span><span>Downhill</span></div>
                 </div>
             </div>
 
-            <div class="disclaimer">
-                <strong>⚠️ Simulated Green:</strong> This is a VIDEO GAME simulation with synthetic contours. Not measured from real greens. Putt physics approximate friction/speed effects. For practice visualization only.
-            </div>
+            <div class="disclaimer" id="disclaimer"></div>
         </div>
     </div>
-
     <script>
         // ============================================
         // STATE - FIRST
         // ============================================
-        
+
         let holeMarker = null;
         let ballMarker = null;
         let placementMode = null;
-        let selectedPreset = null;
-        let puttPower = 50; // 0-100, affects initial velocity (stimpmeter-based)
+        let selectedPreset = null;   // the active green (synthetic preset or measured grid)
+        let puttPower = 50;          // 0-100: how far past the hole the putt would roll
+        let stimp = 10;              // green speed, Stimpmeter feet
         let showContours = true;
         let showLine = true;
+        let lastSolution = null;
+        let lastSolutionKey = '';
 
         // ============================================
-        // CONTOUR PRESETS
+        // PHYSICS CONSTANTS
         // ============================================
-        
+        // Ball rolls (not slides): slope pull on a rolling solid sphere is 5/7 g sin(theta).
+        // Rolling resistance is calibrated from the Stimpmeter: the ramp releases the ball
+        // at 1.83 m/s and it rolls `stimp` feet on flat, so decel = 1.83^2 / (2 * stimp ft).
+        // Stimp 10 -> 0.55 m/s^2.
+        const G = 9.81;
+        const ROLL = 5 / 7;
+        function rollDecel() {
+            const d = Math.max(1, stimp) * 0.3048;
+            return 1.83 * 1.83 / (2 * d);
+        }
+
+        // ============================================
+        // GREENS
+        // ============================================
+        // Synthetic greens are analytic height fields (meters). Slopes are kept in the
+        // 1-4% range of real greens so they behave sensibly at Stimp 10.
         const PRESETS = [
-            {
-                id: 'flat',
-                name: 'Flat',
-                heightField: (x, z) => x * 0.001
-            },
-            {
-                id: 'slope-rl',
-                name: 'Slope R→L',
-                heightField: (x, z) => x * 0.08 // sidehill: a putt down the screen breaks left
-            },
-            {
-                id: 'slope-lr',
-                name: 'Slope L→R',
-                heightField: (x, z) => -x * 0.08 // sidehill: a putt down the screen breaks right
-            },
-            {
-                id: 'ridge',
-                name: 'Ridge',
-                heightField: (x, z) => 0.12 - Math.abs(x) * 0.12 // Strong ridge
-            },
-            {
-                id: 'bowl',
-                name: 'Bowl',
-                heightField: (x, z) => Math.abs(x) * 0.12 - 0.06 // Strong bowl
-            },
-            {
-                id: 'double',
-                name: 'S-Curve',
-                heightField: (x, z) => Math.sin(z / 3 * Math.PI * 2) * 0.08 + x * 0.02
-            }
+            { id: 'flat', name: 'Flat', heightField: (x, z) => x * 0.001 },
+            { id: 'slope-rl', name: 'Slope R→L', heightField: (x, z) => x * 0.025 }, // sidehill: a putt down the screen breaks left
+            { id: 'slope-lr', name: 'Slope L→R', heightField: (x, z) => -x * 0.025 }, // sidehill: a putt down the screen breaks right
+            { id: 'ridge', name: 'Ridge', heightField: (x, z) => 0.12 - Math.sqrt(x * x + 0.36) * 0.03 },
+            { id: 'bowl', name: 'Bowl', heightField: (x, z) => Math.sqrt(x * x + 0.36) * 0.03 - 0.06 },
+            { id: 'double', name: 'S-Curve', heightField: (x, z) => Math.sin(z / 3 * Math.PI * 2) * 0.015 + x * 0.01 }
         ];
+        PRESETS.forEach(p => { p.kind = 'fn'; });
 
-        selectedPreset = PRESETS[1]; // Default to slope
+        // Measured greens (grid). Filled in by loadGridGreen().
+        const REAL_GREEN_URL = 'samples/real-green-1.json';
+        let realGreens = [];   // [{id, name, kind:'grid', ...}]
+
+        selectedPreset = PRESETS[1];
+
+        // Build a grid green from a PuttGuide height map (samples/*.json format).
+        function makeGridGreen(json, id) {
+            const cols = json.cols, rows = json.rows;
+            const csx = json.cellSizeX || json.cellSize, csz = json.cellSizeZ || json.cellSize;
+            const scale = json.heightUnits === 'mm' ? 0.001 : (json.heightUnits === 'cm' ? 0.01 : 1);
+            const n = cols * rows;
+            const h = new Float32Array(n);
+            const mask = new Uint8Array(n);
+            for (let i = 0; i < n; i++) {
+                const v = json.heights[i];
+                h[i] = (v === null || v === undefined) ? NaN : v * scale;
+            }
+            for (let r = 0; r < rows; r++) {
+                const row = json.mask ? json.mask[r] : null;
+                for (let c = 0; c < cols; c++) mask[r * cols + c] = row ? (row.charCodeAt(c) === 49 ? 1 : 0) : 1;
+            }
+            const low = new Uint8Array(n);
+            if (json.lowConfidence) {
+                for (let r = 0; r < rows; r++) for (let c = 0; c < cols; c++)
+                    low[r * cols + c] = json.lowConfidence[r].charCodeAt(c) === 49 ? 1 : 0;
+            }
+            // Masked/missing cells take the nearest measured height so interpolation is stable at edges.
+            fillNearest(h, cols, rows);
+            // Gradient at cell centres (central differences), interpolated during the roll.
+            const gx = new Float32Array(n), gz = new Float32Array(n);
+            for (let r = 0; r < rows; r++) {
+                for (let c = 0; c < cols; c++) {
+                    const c0 = Math.max(0, c - 1), c1 = Math.min(cols - 1, c + 1);
+                    const r0 = Math.max(0, r - 1), r1 = Math.min(rows - 1, r + 1);
+                    gx[r * cols + c] = (h[r * cols + c1] - h[r * cols + c0]) / ((c1 - c0) * csx || 1);
+                    gz[r * cols + c] = (h[r1 * cols + c] - h[r0 * cols + c]) / ((r1 - r0) * csz || 1);
+                }
+            }
+            const ox = json.origin ? json.origin.x : 0, oz = json.origin ? json.origin.z : 0;
+            // Stats over on-green cells.
+            let hmin = Infinity, hmax = -Infinity, sgx = 0, sgz = 0, cnt = 0, slopes = [], lowCnt = 0;
+            for (let i = 0; i < n; i++) {
+                if (!mask[i]) continue;
+                hmin = Math.min(hmin, h[i]); hmax = Math.max(hmax, h[i]);
+                sgx += gx[i]; sgz += gz[i]; cnt++;
+                slopes.push(Math.hypot(gx[i], gz[i]));
+                if (low[i]) lowCnt++;
+            }
+            slopes.sort((a, b) => a - b);
+            const g = {
+                id: id || ('grid-' + Date.now()), name: json.name || 'Scanned green', kind: 'grid',
+                cols, rows, csx, csz, ox, oz, h, gx, gz, mask, low,
+                bounds: { x0: ox, x1: ox + cols * csx, z0: oz, z1: oz + rows * csz },
+                stats: {
+                    areaM2: cnt * csx * csz,
+                    rangeM: hmax - hmin, hmin, hmax,
+                    medianSlope: slopes.length ? slopes[Math.floor(slopes.length / 2)] : 0,
+                    meanGx: cnt ? sgx / cnt : 0, meanGz: cnt ? sgz / cnt : 0,
+                    lowM2: lowCnt * csx * csz
+                },
+                captureDate: json.captureDate || ''
+            };
+            // Bounding box of the on-green cells (used for the view).
+            let c0 = cols, c1 = -1, r0 = rows, r1 = -1;
+            for (let r = 0; r < rows; r++) for (let c = 0; c < cols; c++) if (mask[r * cols + c]) {
+                c0 = Math.min(c0, c); c1 = Math.max(c1, c); r0 = Math.min(r0, r); r1 = Math.max(r1, r);
+            }
+            if (c1 >= 0) g.bounds = { x0: ox + c0 * csx, x1: ox + (c1 + 1) * csx, z0: oz + r0 * csz, z1: oz + (r1 + 1) * csz };
+            return g;
+        }
+
+        function fillNearest(h, cols, rows) {
+            const n = cols * rows;
+            const q = new Int32Array(n);
+            let qh = 0, qt = 0;
+            const seen = new Uint8Array(n);
+            for (let i = 0; i < n; i++) if (!isNaN(h[i])) { seen[i] = 1; q[qt++] = i; }
+            if (!qt) { h.fill(0); return; }
+            while (qh < qt) {
+                const i = q[qh++], r = (i / cols) | 0, c = i - r * cols;
+                const nb = [r > 0 ? i - cols : -1, r < rows - 1 ? i + cols : -1, c > 0 ? i - 1 : -1, c < cols - 1 ? i + 1 : -1];
+                for (const j of nb) if (j >= 0 && !seen[j]) { seen[j] = 1; h[j] = h[i]; q[qt++] = j; }
+            }
+        }
+
+        // Convert the scan checker's "Download Height Map" file (green_capture.json).
+        // Its heightData[row][col] is in meters; rows run along the scan's depth axis,
+        // cols along its width; every cell is filled, so there is no off-green mask.
+        function checkerJsonToHeightmap(j) {
+            const grid = j.heightData;
+            const rows = grid.length, cols = grid[0].length;
+            const heights = [];
+            for (let r = 0; r < rows; r++) for (let c = 0; c < cols; c++) {
+                const v = grid[r][c];
+                heights.push(v === null || v === undefined ? null : Math.round(v * 1000));
+            }
+            return {
+                format: 'puttguide-heightmap', version: 1,
+                name: j.name || 'Checker height map', captureDate: j.captureDate || '',
+                cols, rows, cellSizeX: (j.widthMeters || cols * 0.1) / cols, cellSizeZ: (j.heightMeters || rows * 0.1) / rows,
+                origin: { x: -(j.widthMeters || 0) / 2, z: -(j.heightMeters || 0) / 2 },
+                heightUnits: 'mm', heights, mask: null, lowCoverage: true
+            };
+        }
 
         // ============================================
         // CANVAS SETUP
         // ============================================
-        
+
         const canvas = document.getElementById('green-canvas');
         const ctx = canvas.getContext('2d');
-        
-        let canvasWidth, canvasHeight;
+
+        let canvasWidth = 400, canvasHeight = 400;
         let dpr = window.devicePixelRatio || 1;
 
         function resizeCanvas() {
             const container = document.getElementById('canvas-container');
             dpr = window.devicePixelRatio || 1;
-            
-            canvasWidth = container.clientWidth;
-            canvasHeight = container.clientHeight;
-            
+            canvasWidth = container.clientWidth || 400;
+            canvasHeight = container.clientHeight || 400;
             canvas.width = canvasWidth * dpr;
             canvas.height = canvasHeight * dpr;
             canvas.style.width = canvasWidth + 'px';
             canvas.style.height = canvasHeight + 'px';
-            
             ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-            
+            bgCacheKey = '';
+            // Pan is in pixels, so re-fit after a size change (rotation, Safari toolbar).
+            if (typeof viewZoom !== 'undefined') {
+                if (selectedPreset.kind === 'grid' && ballMarker && holeMarker) zoomToPutt(); else resetView();
+            }
             render();
         }
 
         // ============================================
         // COORDINATE SYSTEMS
         // ============================================
-        
-        // World: -5 to +5 in X and Z (10m x 10m green)
-        // Screen: 0 to canvasWidth/Height
-        
+        // World meters: x to the right, z down the screen. Synthetic greens are 10 m wide
+        // and fill the screen. Measured greens are fitted with equal x/z scale (no stretch).
+
+        function greenBounds() {
+            if (selectedPreset.kind === 'grid') return selectedPreset.bounds;
+            const aspect = canvasHeight / Math.max(1, canvasWidth);
+            return { x0: -5, x1: 5, z0: -5 * aspect, z1: 5 * aspect };
+        }
+
+        // Pinch to zoom / drag to pan (when not placing a marker). screen = fit(world) * zoom + pan
+        let viewZoom = 1, viewPanX = 0, viewPanY = 0;
+        function viewTransform() {
+            const b = greenBounds();
+            const pad = selectedPreset.kind === 'grid' ? 10 : 0;
+            const w = b.x1 - b.x0, h = b.z1 - b.z0;
+            const s = Math.min((canvasWidth - 2 * pad) / w, (canvasHeight - 2 * pad) / h);
+            const ox = (canvasWidth - w * s) / 2 - b.x0 * s, oy = (canvasHeight - h * s) / 2 - b.z0 * s;
+            return { s: s * viewZoom, ox: ox * viewZoom + viewPanX, oy: oy * viewZoom + viewPanY };
+        }
+        function resetView() { viewZoom = 1; viewPanX = 0; viewPanY = 0; bgCacheKey = ''; }
+        // Zoom so the ball, hole and a margin for the break fill most of the screen.
+        function zoomToPutt() {
+            if (!ballMarker || !holeMarker) { resetView(); return; }
+            resetView();
+            const m = 1.3;
+            const p0 = worldToScreen({ x: Math.min(ballMarker.x, holeMarker.x) - m, z: Math.min(ballMarker.z, holeMarker.z) - m });
+            const p1 = worldToScreen({ x: Math.max(ballMarker.x, holeMarker.x) + m, z: Math.max(ballMarker.z, holeMarker.z) + m });
+            const top = 56; // room for the info box at the top
+            const z = Math.max(1, Math.min(4, Math.min(canvasWidth / (p1.x - p0.x), (canvasHeight - top) / (p1.y - p0.y))));
+            viewZoom = z;
+            viewPanX = canvasWidth / 2 - (p0.x + p1.x) / 2 * z;
+            viewPanY = top + (canvasHeight - top) / 2 - (p0.y + p1.y) / 2 * z;
+        }
+
         function worldToScreen(world) {
-            const screenX = (world.x + 5) / 10 * canvasWidth;
-            const screenY = (world.z + 5) / 10 * canvasHeight;
-            return { x: screenX, y: screenY };
+            const v = viewTransform();
+            return { x: world.x * v.s + v.ox, y: world.z * v.s + v.oy };
         }
 
         function screenToWorld(screen) {
-            const worldX = (screen.x / canvasWidth) * 10 - 5;
-            const worldZ = (screen.y / canvasHeight) * 10 - 5;
-            return { x: worldX, z: worldZ };
+            const v = viewTransform();
+            return { x: (screen.x - v.ox) / v.s, z: (screen.y - v.oy) / v.s };
         }
 
         function distance(p1, p2) {
@@ -476,36 +611,66 @@
         // ============================================
         // HEIGHT FIELD & GRADIENT
         // ============================================
-        
+
+        function gridSample(arr, g, x, z) {
+            let fx = (x - g.ox) / g.csx - 0.5, fz = (z - g.oz) / g.csz - 0.5;
+            fx = Math.max(0, Math.min(g.cols - 1.001, fx));
+            fz = Math.max(0, Math.min(g.rows - 1.001, fz));
+            const c = fx | 0, r = fz | 0, tx = fx - c, tz = fz - r;
+            const i = r * g.cols + c;
+            const c1 = c + 1 < g.cols ? 1 : 0, r1 = r + 1 < g.rows ? g.cols : 0;
+            const a = arr[i] * (1 - tx) + arr[i + c1] * tx;
+            const b = arr[i + r1] * (1 - tx) + arr[i + r1 + c1] * tx;
+            return a * (1 - tz) + b * tz;
+        }
+
         function getHeight(x, z) {
+            if (selectedPreset.kind === 'grid') return gridSample(selectedPreset.h, selectedPreset, x, z);
             return selectedPreset.heightField(x, z);
         }
 
         function getGradient(x, z, delta = 0.02) {
+            const g = selectedPreset;
+            if (g.kind === 'grid') return { x: gridSample(g.gx, g, x, z), z: gridSample(g.gz, g, x, z) };
             return {
                 x: (getHeight(x + delta, z) - getHeight(x - delta, z)) / (2 * delta),
                 z: (getHeight(x, z + delta) - getHeight(x, z - delta)) / (2 * delta)
             };
         }
 
+        // True when (x, z) is on measured green. Synthetic greens are on-green inside the view.
+        function isOnGreen(x, z) {
+            const g = selectedPreset;
+            if (g.kind !== 'grid') {
+                const b = greenBounds();
+                return x >= b.x0 - 1 && x <= b.x1 + 1 && z >= b.z0 - 1 && z <= b.z1 + 1;
+            }
+            const c = Math.floor((x - g.ox) / g.csx), r = Math.floor((z - g.oz) / g.csz);
+            if (c < 0 || r < 0 || c >= g.cols || r >= g.rows) return false;
+            return g.mask[r * g.cols + c] === 1;
+        }
+
         // ============================================
         // PUTT PHYSICS SIMULATION
         // ============================================
-        
+        // a = -(5/7) g grad z - d * v_hat   (d = rolling resistance from Stimp)
+
+        // How far the putt would roll past the hole if it missed (pace), from the power slider.
+        // Soft ~0.1 m (dies at the cup), medium ~0.3 m, hard ~0.7-1.1 m past.
+        function paceForPower(power) {
+            const p = Math.max(0, Math.min(1, power / 100));
+            return 0.05 + Math.pow(p, 2.2) * 1.05;
+        }
+
+        // First guess at launch speed from energy: 1/2 v0^2 = d*L + (5/7) g dh + d*pace.
         function launchSpeed(targetDist, power, ball, hole) {
-            const powerFraction = Math.max(0, Math.min(1, power / 100));
-            const mu = 0.14;
-            const g = 9.81;
+            const d = rollDecel();
             const dist = Math.max(0.25, targetDist);
             let climb = 0;
             if (ball && hole) climb = getHeight(hole.x, hole.z) - getHeight(ball.x, ball.z);
-            // Uphill needs extra speed. Downhill still keeps a little pace so soft can die at the cup.
-            const climbEnergy = g * Math.max(0, climb);
-            const help = climb < 0 ? g * climb * 0.35 : 0; // only some of the downhill is "free"
-            const path = dist * 1.08; // break makes the roll longer than the straight line
-            const pace = 0.05 + Math.pow(powerFraction, 2.2) * 1.05;
-            const energy = Math.max(0.2, mu * g * path + climbEnergy + help + mu * g * pace);
-            return Math.sqrt(2 * energy);
+            const path = dist * 1.05; // break makes the roll a bit longer than the straight line
+            const energy = d * path + ROLL * G * climb + d * paceForPower(power);
+            return Math.sqrt(2 * Math.max(0.03, energy));
         }
 
         function distPointToSegment(p, a, b) {
@@ -518,98 +683,103 @@
             return Math.hypot(p.x - (a.x + abx * t), p.z - (a.z + abz * t));
         }
 
-        function simulatePuttWithAim(ball, aimAngle, power, maxDist = 22, cupPos = null, cupRadius = 0.08) {
-            const powerFraction = Math.max(0, Math.min(1, power / 100));
-            const mu = 0.14;
-            const g = 9.81;
-            const dt = 0.006;
+        // record=false is the fast probe used by the aim search: no path is stored, the
+        // roll ends at capture, and the closest approach to the cup is tracked instead.
+        function simulatePuttWithAim(ball, aimAngle, power, maxDist = 22, cupPos = null, cupRadius = 0.08, v0Override = null, record = true) {
+            const d = rollDecel();
+            let dt = 0.008;
             const targetDist = cupPos ? distance(ball, cupPos) : maxDist;
-            // Continuous in power so the slider does not jump.
-            // Soft (~30): small leftover. Hard (~80): clearly past the cup.
-            const v0 = launchSpeed(targetDist, power, ball, cupPos);
-
-            let pos = { x: ball.x, z: ball.z };
-            let velocity = { x: v0 * Math.cos(aimAngle), z: v0 * Math.sin(aimAngle) };
-            const points = [{ x: ball.x, z: ball.z }];
-            let captureIndex = null;
-            let capturedSpeed = null;
-            let time = 0;
-
+            const v0 = v0Override !== null ? v0Override : launchSpeed(targetDist, power, ball, cupPos);
+            // Unit vector ball -> cup, used to stop early once a miss is well past the cup.
+            const ux = cupPos ? (cupPos.x - ball.x) / Math.max(1e-6, targetDist) : 0;
+            const uz = cupPos ? (cupPos.z - ball.z) / Math.max(1e-6, targetDist) : 0;
+            const cx = cupPos ? cupPos.x : 0, cz = cupPos ? cupPos.z : 0, cr2 = cupRadius * cupRadius;
+            const farLimit = Math.max(maxDist, targetDist * 3);
+            const g = selectedPreset;
+            const isGrid = g.kind === 'grid';
+            const hf = g.heightField;
+            const b = isGrid ? null : greenBounds();
+            const k = ROLL * G;
+            let px = ball.x, pz = ball.z;
+            let vx = v0 * Math.cos(aimAngle), vz = v0 * Math.sin(aimAngle);
+            const points = [{ x: px, z: pz }];
+            let captureIndex = null, capturedSpeed = null;
+            let time = 0, step = 0;
+            let stopped = false, offGreen = false, passed = false;
+            let gxv = 0, gzv = 0;
+            let closest = Infinity, closestStep = 0;
             while (time < 18) {
-                const speed = Math.hypot(velocity.x, velocity.z);
-                if (speed < 0.02) break;
-                const prev = { x: pos.x, z: pos.z };
-                const grad = getGradient(pos.x, pos.z);
-                // Down the slope (negative height gradient)
-                const ax = -g * grad.x - mu * g * (velocity.x / speed);
-                const az = -g * grad.z - mu * g * (velocity.z / speed);
-                velocity.x += ax * dt;
-                velocity.z += az * dt;
-                pos.x += velocity.x * dt;
-                pos.z += velocity.z * dt;
-                points.push({ x: pos.x, z: pos.z });
+                if (isGrid) { gxv = gridSample(g.gx, g, px, pz); gzv = gridSample(g.gz, g, px, pz); }
+                else {
+                    gxv = (hf(px + 0.02, pz) - hf(px - 0.02, pz)) / 0.04;
+                    gzv = (hf(px, pz + 0.02) - hf(px, pz - 0.02)) / 0.04;
+                }
+                const speed = Math.sqrt(vx * vx + vz * vz);
+                if (speed < 0.02 && k * Math.sqrt(gxv * gxv + gzv * gzv) <= d) { stopped = true; break; }
+                dt = Math.min(0.02, Math.max(0.004, 0.015 / (speed + 1e-6))); // ~1.5 cm steps
+                const inv = speed > 1e-6 ? 1 / speed : 0;
+                vx += (-k * gxv - d * vx * inv) * dt;
+                vz += (-k * gzv - d * vz * inv) * dt;
+                const qx = px, qz = pz;
+                px += vx * dt; pz += vz * dt;
+                step++;
+                const on = isGrid ? isOnGreen(px, pz)
+                    : (px >= b.x0 - 1 && px <= b.x1 + 1 && pz >= b.z0 - 1 && pz <= b.z1 + 1);
+                if (!on) { offGreen = true; if (record) points.push({ x: px, z: pz }); break; }
+                if (record && (step & 1) === 0) points.push({ x: px, z: pz });
                 if (cupPos && captureIndex === null) {
-                    const seg = distPointToSegment(cupPos, prev, pos);
-                    if (seg < cupRadius || distance(pos, cupPos) < cupRadius) {
-                        captureIndex = points.length - 1;
+                    // distance from cup to the segment just travelled
+                    const sx = px - qx, sz = pz - qz, l2 = sx * sx + sz * sz;
+                    let t = l2 > 1e-12 ? ((cx - qx) * sx + (cz - qz) * sz) / l2 : 0;
+                    t = t < 0 ? 0 : (t > 1 ? 1 : t);
+                    const ex = qx + sx * t - cx, ez = qz + sz * t - cz;
+                    const e2 = ex * ex + ez * ez;
+                    if (e2 < closest) { closest = e2; closestStep = step; }
+                    if (e2 < cr2) {
                         capturedSpeed = speed;
-                        points[captureIndex] = { x: cupPos.x, z: cupPos.z };
+                        if (!record) { captureIndex = 0; break; }
+                        if ((step & 1) !== 0) points.push({ x: px, z: pz });
+                        captureIndex = points.length - 1;
+                        points[captureIndex] = { x: cx, z: cz };
+                    } else if ((step & 7) === 0) {
+                        const along = (px - ball.x) * ux + (pz - ball.z) * uz;
+                        if (along > targetDist + 0.6) { passed = true; break; }
                     }
                 }
                 time += dt;
-                if (distance(pos, ball) > Math.max(maxDist, targetDist * 3)) break;
+                if ((step & 15) === 0 && Math.hypot(px - ball.x, pz - ball.z) > farLimit) break;
             }
-            return { path: points, captureIndex, capturedSpeed, v0 };
+            if (record && !offGreen) points.push({ x: px, z: pz });
+            return { path: points, captureIndex, capturedSpeed, v0, stopped, offGreen, passed,
+                     closest: captureIndex !== null ? 0 : Math.sqrt(closest), closestAtEnd: captureIndex === null && step - closestStep <= 2 };
         }
 
-        function solveAimAngle(ball, hole, power, cupRadius = 0.08) {
+        function pathLength(pts, from) {
+            let L = 0;
+            for (let i = (from || 0) + 1; i < pts.length; i++) L += distance(pts[i - 1], pts[i]);
+            return L;
+        }
+
+        // Search aim offsets at a fixed launch speed. Returns the make with the smallest
+        // aim offset, plus the closest miss for speed correction.
+        function searchAimAtSpeed(ball, hole, power, v0, cupRadius, around = null) {
             const naiveAngle = Math.atan2(hole.z - ball.z, hole.x - ball.x);
-            const naiveResult = simulatePuttWithAim(ball, naiveAngle, power, 22, hole, cupRadius);
             const distBH = Math.max(0.3, distance(ball, hole));
             const perp = { x: Math.cos(naiveAngle + Math.PI / 2), z: Math.sin(naiveAngle + Math.PI / 2) };
-
-            function pack(angle, result, offsetSigned) {
-                const idx = result.captureIndex;
-                const sinkPath = result.path.slice(0, idx + 1);
-                sinkPath[sinkPath.length - 1] = { x: hole.x, z: hole.z };
-                let overrunPath = null;
-                if (idx < result.path.length - 2) {
-                    const tail = result.path.slice(idx);
-                    const over = distance(tail[tail.length - 1], hole);
-                    if (over >= 0.22) overrunPath = tail;
-                }
-                return {
-                    aimAngle: angle,
-                    aimPoint: { x: hole.x + perp.x * offsetSigned, z: hole.z + perp.z * offsetSigned },
-                    sinkPath,
-                    overrunPath,
-                    naivePath: naiveResult.path,
-                    aimOffset: Math.abs(offsetSigned),
-                    offsetDir: offsetSigned > 0.03 ? 'R' : (offsetSigned < -0.03 ? 'L' : ''),
-                    captureSpeed: result.capturedSpeed,
-                    missed: false
-                };
-            }
-
             const maxOffset = Math.min(4.2, Math.max(1.2, distBH * 1.1));
+            const lo = around === null ? -maxOffset : Math.max(-maxOffset, around - 0.45);
+            const hi = around === null ? maxOffset : Math.min(maxOffset, around + 0.45);
             function rollAt(offset) {
                 const aimPoint = { x: hole.x + perp.x * offset, z: hole.z + perp.z * offset };
                 const angle = Math.atan2(aimPoint.z - ball.z, aimPoint.x - ball.x);
-                const result = simulatePuttWithAim(ball, angle, power, 22, hole, cupRadius);
-                let closest = Infinity;
-                if (result.captureIndex === null) {
-                    for (const pt of result.path) closest = Math.min(closest, distance(pt, hole));
-                } else closest = 0;
-                return { offset, angle, result, closest };
+                const result = simulatePuttWithAim(ball, angle, power, 22, hole, cupRadius, v0, false);
+                return { offset, angle, result, closest: result.closest };
             }
-            const coarse = 41;
+            const coarse = around === null ? 41 : 13;
             let samples = [];
-            for (let i = 0; i < coarse; i++) {
-                samples.push(rollAt(-maxOffset + (2 * maxOffset) * (i / (coarse - 1))));
-            }
+            for (let i = 0; i < coarse; i++) samples.push(rollAt(lo + (hi - lo) * (i / (coarse - 1))));
             samples.sort((a, b) => a.closest - b.closest);
-            // Refine around the closest approaches so a narrow cup window is not skipped
-            const seeds = samples.slice(0, 3);
+            const seeds = samples.slice(0, around === null ? 3 : 2);
             let best = null;
             for (const seed of seeds) {
                 for (let k = -8; k <= 8; k++) {
@@ -620,348 +790,326 @@
                     if (!best || Math.abs(hit.offset) < Math.abs(best.offset) - 1e-4) best = hit;
                 }
             }
-            if (best) return pack(best.angle, best.result, best.offset);
-
-            // No capture: still return the straight roll, marked missed, so the UI can say so
-            return {
-                aimAngle: naiveAngle,
-                aimPoint: hole,
-                sinkPath: naiveResult.path,
-                overrunPath: null,
-                naivePath: naiveResult.path,
-                aimOffset: 0,
-                offsetDir: '',
-                captureSpeed: null,
-                missed: true
-            };
+            return { best, closest: samples[0], perp, naiveAngle };
         }
 
-        function simulatePutt(ball, hole, power) {
-            // Legacy wrapper - solve for aim that sinks
-            const solution = solveAimAngle(ball, hole, power);
-            return solution.sinkPath || solution.naivePath.path || [];
-            const totalDist = distance(ball, hole);
-            if (totalDist < 0.01) return [ball, hole];
-            
-            // TRUE PHYSICS: Power affects initial velocity
-            // Key insight: Soft = LOW velocity → MORE time for slope to deflect
-            //              Hard = HIGH velocity → LESS time for slope to deflect
-            const powerFraction = power / 100; // 0.0 to 1.0
-            
-            // Initial velocity range designed for proper break behavior
-            // Soft (0%): 1.5 m/s → ~2s flight time → MORE break
-            // Hard (100%): 4.5 m/s → ~0.7s flight time → LESS break
-            const v0 = 1.5 + powerFraction * 3.0; // 1.5 to 4.5 m/s
-            
-            // Rolling friction coefficient μ (FIXED - same for all putts)
-            // This is a property of the green surface, not the stroke
-            // Typical golf green: μ ≈ 0.13-0.15
-            const mu = 0.14; // Constant friction
-            
-            // Gravity constant
-            const g = 9.81; // m/s²
-            
-            // Time step for integration
-            const dt = 0.01; // seconds
-            const maxTime = 20; // max simulation time
-            
-            // Initial state
-            let pos = { x: ball.x, z: ball.z };
-            let velocity = { 
-                x: v0 * (hole.x - ball.x) / totalDist,
-                z: v0 * (hole.z - ball.z) / totalDist
-            };
-            
-            const points = [{ ...ball }];
-            let time = 0;
-            let stepCount = 0;
-            
-            while (time < maxTime) {
-                const speed = Math.sqrt(velocity.x * velocity.x + velocity.z * velocity.z);
-                
-                // Stop if ball has stopped
-                if (speed < 0.01) break;
-                
-                // Get surface gradient (slope) at current position
-                // gradient.x = dh/dx, gradient.z = dh/dz
-                const grad = getGradient(pos.x, pos.z);
-                
-                // PHYSICS: Forces on ball
-                // 1. Gravity component along slope: F_gravity = m * g * gradient
-                // 2. Rolling friction opposing motion: F_friction = -μ * m * g * v_hat
-                //    (friction is normal force μ*N times direction, N ≈ m*g on gentle slopes)
-                
-                // Acceleration from gravity (slope effect)
-                // a = g * gradient (mass cancels)
-                const a_gravity = {
-                    x: g * grad.x,
-                    z: g * grad.z
-                };
-                
-                // Acceleration from rolling friction (opposes velocity)
-                // a_friction = -μ * g * (v / |v|)
-                const v_hat = { x: velocity.x / speed, z: velocity.z / speed };
-                const a_friction = {
-                    x: -mu * g * v_hat.x,
-                    z: -mu * g * v_hat.z
-                };
-                
-                // Total acceleration
-                const a_total = {
-                    x: a_gravity.x + a_friction.x,
-                    z: a_gravity.z + a_friction.z
-                };
-                
-                // Update velocity: v(t+dt) = v(t) + a*dt
-                velocity.x += a_total.x * dt;
-                velocity.z += a_total.z * dt;
-                
-                // Update position: x(t+dt) = x(t) + v*dt
-                pos.x += velocity.x * dt;
-                pos.z += velocity.z * dt;
-                
-                // Record point for visualization (every few steps for smooth curve)
-                if (stepCount % 2 === 0) {
-                    points.push({ x: pos.x, z: pos.z });
+        // Distance the ball rolls past the cup after capture (Infinity if it never stops on the green).
+        function overrunOf(result) {
+            if (result.captureIndex === null) return null;
+            if (!result.stopped) return Infinity;
+            return pathLength(result.path, result.captureIndex);
+        }
+
+        function solveAimAngle(ball, hole, power, cupRadius = 0.08) {
+            const d = rollDecel();
+            const pace = paceForPower(power);
+            // Target speed as the ball reaches the cup: the speed that would roll `pace`
+            // metres further on flat green. Soft = dying at the cup, hard = firm.
+            const vt = Math.sqrt(2 * d * pace);
+            let v0 = launchSpeed(distance(ball, hole), power, ball, hole);
+            let chosen = null, chosenErr = Infinity, lastSearch = null, around = null;
+            // Speed search: bracket [lo, hi] on launch speed, energy-based guesses, bisection fallback.
+            let lo = 0, hi = Infinity;
+            for (let iter = 0; iter < 8; iter++) {
+                let s = searchAimAtSpeed(ball, hole, power, v0, cupRadius, around);
+                if (!s.best && around !== null) s = searchAimAtSpeed(ball, hole, power, v0, cupRadius, null);
+                lastSearch = s;
+                let guess;
+                if (s.best) {
+                    const vc = s.best.result.capturedSpeed;
+                    const err = Math.abs(vc - vt);
+                    if (err < chosenErr) { chosen = s; chosenErr = err; }
+                    if (err < 0.03 + 0.08 * vt) break;
+                    if (vc > vt) hi = Math.min(hi, v0); else lo = Math.max(lo, v0);
+                    // Energy correction: changing v0^2 changes the speed^2 at the cup by about the same amount.
+                    guess = Math.sqrt(Math.max(0.01, v0 * v0 + (vt * vt - vc * vc)));
+                    around = s.best.offset;
+                } else {
+                    const c = s.closest;
+                    const atEnd = c.result.closestAtEnd;
+                    if (c.result.offGreen && atEnd && !chosen) {
+                        hi = Math.min(hi, v0); guess = v0 * 0.85; // ran off the scanned green first
+                    } else if (c.result.stopped && atEnd) {
+                        lo = Math.max(lo, v0); guess = Math.sqrt(v0 * v0 + 2 * d * (c.closest + pace) * 1.1); // short
+                    } else {
+                        // Passed the hole wide at every aim: too soft to hold this line.
+                        lo = Math.max(lo, v0); guess = v0 * 1.1;
+                    }
                 }
-                
-                stepCount++;
-                time += dt;
-                
-                // Safety: stop if ball goes way off course
-                if (distance(pos, ball) > totalDist * 3) break;
+                if (hi - lo < 0.012) break;
+                v0 = (guess > lo && guess < hi) ? guess : (isFinite(hi) ? (lo + hi) / 2 : Math.max(guess, lo * 1.1));
             }
-            
-            // Add final position
-            points.push({ x: pos.x, z: pos.z });
-            
-            return points;
+            const s = chosen || lastSearch;
+            const naiveResult = simulatePuttWithAim(ball, s.naiveAngle, power, 22, hole, cupRadius, v0);
+            if (chosen) {
+                const best = chosen.best;
+                const result = simulatePuttWithAim(ball, best.angle, power, 22, hole, cupRadius, best.result.v0, true);
+                if (result.captureIndex === null) { result.captureIndex = result.path.length - 1; } // numerical edge case
+                const idx = result.captureIndex;
+                const sinkPath = result.path.slice(0, idx + 1);
+                sinkPath[sinkPath.length - 1] = { x: hole.x, z: hole.z };
+                let overrunPath = null;
+                if (idx < result.path.length - 2) {
+                    const tail = result.path.slice(idx);
+                    const over = distance(tail[tail.length - 1], hole);
+                    if (over >= 0.22) overrunPath = tail;
+                }
+                const off = best.offset;
+                return {
+                    aimAngle: best.angle,
+                    aimPoint: { x: hole.x + chosen.perp.x * off, z: hole.z + chosen.perp.z * off },
+                    sinkPath, overrunPath,
+                    naivePath: naiveResult.path,
+                    aimOffset: Math.abs(off),
+                    offsetDir: off > 0.03 ? 'R' : (off < -0.03 ? 'L' : ''),
+                    captureSpeed: result.capturedSpeed,
+                    v0: result.v0,
+                    overrun: overrunOf(result),
+                    runsOff: result.offGreen,
+                    missed: false
+                };
+            }
+            return {
+                aimAngle: s.naiveAngle, aimPoint: hole,
+                sinkPath: naiveResult.path, overrunPath: null, naivePath: naiveResult.path,
+                aimOffset: 0, offsetDir: '', captureSpeed: null, v0,
+                runsOff: naiveResult.offGreen, missed: true
+            };
+        }
+
+        function getSolution() {
+            if (!ballMarker || !holeMarker) return null;
+            const key = [selectedPreset.id, ballMarker.x, ballMarker.z, holeMarker.x, holeMarker.z, puttPower, stimp].join('|');
+            if (key !== lastSolutionKey) {
+                lastSolution = solveAimAngle(ballMarker, holeMarker, puttPower);
+                lastSolutionKey = key;
+            }
+            return lastSolution;
         }
 
         // ============================================
-        // SELF-TEST
+        // SELF-TEST  (open green-sim.html?test and check the console)
         // ============================================
-        
+
         function runSelfTest() {
             console.log('=== PuttGuide Aim Solver Self-Test ===\n');
-            
             const tests = [
                 { preset: 'slope-lr', name: 'Slope L→R (4m)', ball: { x: -2, z: 0 }, hole: { x: 2, z: 0 } },
                 { preset: 'slope-rl', name: 'Slope R→L (4m)', ball: { x: 2, z: 0 }, hole: { x: -2, z: 0 } },
-                { preset: 'slope-lr', name: 'Slope L→R (1.2m)', ball: { x: -0.6, z: 0 }, hole: { x: 0.6, z: 0 } },
-                { preset: 'slope-rl', name: 'Slope R→L (1.2m)', ball: { x: 0.6, z: 0 }, hole: { x: -0.6, z: 0 } },
-                { preset: 'slope-lr', name: 'Slope L→R (6m)', ball: { x: -3, z: 0 }, hole: { x: 3, z: 0 } }
+                { preset: 'slope-lr', name: 'Sidehill L→R (3m, down screen)', ball: { x: 0, z: -1.5 }, hole: { x: 0, z: 1.5 } },
+                { preset: 'slope-rl', name: 'Sidehill R→L (3m, down screen)', ball: { x: 0, z: -1.5 }, hole: { x: 0, z: 1.5 } },
+                { preset: 'slope-lr', name: 'Sidehill L→R (6m)', ball: { x: 0, z: -3 }, hole: { x: 0, z: 3 } }
             ];
-            
+            const saved = selectedPreset;
             let passed = 0;
-            let failed = 0;
-            
+            const results = [];
             tests.forEach(test => {
-                // Switch to correct preset
-                const preset = PRESETS.find(p => p.id === test.preset);
-                if (!preset) {
-                    console.error(`Preset ${test.preset} not found!`);
-                    failed++;
-                    return;
-                }
-                selectedPreset = preset;
-                const softSol = solveAimAngle(test.ball, test.hole, 30); // Soft
-                const hardSol = solveAimAngle(test.ball, test.hole, 80); // Hard
-                
-                const softEnd = softSol.sinkPath[softSol.sinkPath.length - 1];
-                const hardEnd = hardSol.sinkPath[hardSol.sinkPath.length - 1];
-                
-                const softMiss = distance(softEnd, test.hole);
-                const hardMiss = distance(hardEnd, test.hole);
-                
-                const softOverrun = softSol.overrunPath ? 
-                    distance(test.hole, softSol.overrunPath[softSol.overrunPath.length - 1]) : 0;
-                const hardOverrun = hardSol.overrunPath ? 
-                    distance(test.hole, hardSol.overrunPath[hardSol.overrunPath.length - 1]) : 0;
-                
-                console.log(`Test: ${test.name}`);
-                console.log(`  Soft: aim ${softSol.aimOffset.toFixed(2)}m ${softSol.offsetDir}, miss ${softMiss.toFixed(3)}m, overrun ${softOverrun.toFixed(2)}m`);
-                console.log(`  Hard: aim ${hardSol.aimOffset.toFixed(2)}m ${hardSol.offsetDir}, miss ${hardMiss.toFixed(3)}m, overrun ${hardOverrun.toFixed(2)}m`);
-                
+                selectedPreset = PRESETS.find(p => p.id === test.preset);
+                const softSol = solveAimAngle(test.ball, test.hole, 30);
+                const hardSol = solveAimAngle(test.ball, test.hole, 80);
+                const softOver = softSol.overrunPath ? distance(test.hole, softSol.overrunPath[softSol.overrunPath.length - 1]) : 0;
+                const hardOver = hardSol.overrunPath ? distance(test.hole, hardSol.overrunPath[hardSol.overrunPath.length - 1]) : 0;
                 const checks = [
-                    { name: 'Soft sinks', pass: softMiss < 0.054 },
-                    { name: 'Hard sinks', pass: hardMiss < 0.054 },
-                    { name: 'Soft aims more outside', pass: softSol.aimOffset > hardSol.aimOffset },
-                    { name: 'Soft less overrun', pass: softOverrun < hardOverrun }
+                    { name: 'Soft sinks', pass: !softSol.missed },
+                    { name: 'Hard sinks', pass: !hardSol.missed },
+                    { name: 'Soft aims more outside', pass: softSol.aimOffset >= hardSol.aimOffset },
+                    { name: 'Soft less overrun', pass: softOver <= hardOver }
                 ];
-                
-                let testPassed = true;
-                checks.forEach(check => {
-                    if (!check.pass) {
-                        console.log(`  ❌ ${check.name}`);
-                        testPassed = false;
-                    }
-                });
-                
-                if (testPassed) {
-                    console.log(`  ✅ PASS\n`);
-                    passed++;
-                } else {
-                    console.log(`  ❌ FAIL\n`);
-                    failed++;
-                }
+                const ok = checks.every(c => c.pass);
+                if (ok) passed++;
+                const line = `${test.name}: soft aim ${softSol.aimOffset.toFixed(2)}m ${softSol.offsetDir}, hard aim ${hardSol.aimOffset.toFixed(2)}m ${hardSol.offsetDir}, overrun soft ${softOver.toFixed(2)} / hard ${hardOver.toFixed(2)} ${ok ? '✅' : '❌ ' + checks.filter(c => !c.pass).map(c => c.name).join(', ')}`;
+                console.log(line);
+                results.push({ name: test.name, ok, line });
             });
-            
+            selectedPreset = saved;
             console.log(`=== Results: ${passed}/${tests.length} passed ===`);
-            if (failed === 0) {
-                console.log('🎉 ALL TESTS PASSED');
-            } else {
-                console.log(`⚠️  ${failed} tests failed`);
-            }
+            return { passed, total: tests.length, results };
         }
-        
-        // Auto-run self-test on load (can be disabled)
+
         window.addEventListener('load', () => {
-            if (window.location.search.includes('test')) {
-                setTimeout(runSelfTest, 1000);
-            }
+            if (window.location.search.includes('test')) setTimeout(runSelfTest, 1000);
         });
-        
+
         // ============================================
         // RENDERING
         // ============================================
-        
+
         function render() {
             ctx.clearRect(0, 0, canvasWidth, canvasHeight);
-            
-            // Draw 3D-looking green with contours
-            if (showContours) {
-                renderGreenSurface();
-            } else {
-                // Simple gradient background
-                const gradient = ctx.createLinearGradient(0, 0, 0, canvasHeight);
-                gradient.addColorStop(0, '#2d5a3d');
-                gradient.addColorStop(1, '#1a4d2e');
-                ctx.fillStyle = gradient;
-                ctx.fillRect(0, 0, canvasWidth, canvasHeight);
-            }
-            
-            // Draw putt line
-            if (showLine && holeMarker && ballMarker) {
-                renderPuttLine();
-            }
-            
-            // Draw markers
+            drawBackground();
+            if (showLine && holeMarker && ballMarker) renderPuttLine();
             if (holeMarker) renderHole(holeMarker);
             if (ballMarker) renderBall(ballMarker);
         }
 
-        function renderGreenSurface() {
-            const gridSize = 20; // 20x20 grid
-            const cellWidth = canvasWidth / gridSize;
-            const cellHeight = canvasHeight / gridSize;
-            
-            for (let i = 0; i < gridSize; i++) {
-                for (let j = 0; j < gridSize; j++) {
-                    const screenX = i * cellWidth;
-                    const screenY = j * cellHeight;
-                    
-                    // Convert to world coords (center of cell)
-                    const world = screenToWorld({
-                        x: screenX + cellWidth / 2,
-                        y: screenY + cellHeight / 2
-                    });
-                    
-                    const height = getHeight(world.x, world.z);
-                    
-                    // Color based on height (hillshade effect)
-                    const grad = getGradient(world.x, world.z);
-                    const slope = Math.sqrt(grad.x * grad.x + grad.z * grad.z);
-                    
-                    // Base color from height
-                    const hNorm = (height + 0.03) / 0.06; // Normalize to 0-1
-                    const hClamped = Math.max(0, Math.min(1, hNorm));
-                    
-                    // Green palette (darker = lower, lighter = higher)
-                    const r = Math.floor(26 + hClamped * 81);
-                    const g = Math.floor(77 + hClamped * 82);
-                    const b = Math.floor(46 + hClamped * 74);
-                    
-                    // Hillshade: darken slopes
-                    const shadeFactor = 1 - slope * 2;
-                    const shadeR = Math.floor(r * Math.max(0.5, shadeFactor));
-                    const shadeG = Math.floor(g * Math.max(0.5, shadeFactor));
-                    const shadeB = Math.floor(b * Math.max(0.5, shadeFactor));
-                    
-                    ctx.fillStyle = `rgb(${shadeR}, ${shadeG}, ${shadeB})`;
-                    ctx.fillRect(screenX, screenY, cellWidth + 1, cellHeight + 1);
+
+        // ============================================
+        // GREEN SURFACE (cached per green + canvas size)
+        // ============================================
+
+        let bgCanvas = null, bgCacheKey = '';
+
+        // Sample the active green on a regular grid in world space.
+        function sampleGreenGrid() {
+            const g = selectedPreset;
+            if (g.kind === 'grid') {
+                return { cols: g.cols, rows: g.rows, x0: g.ox, z0: g.oz, dx: g.csx, dz: g.csz,
+                         h: g.h, mask: g.mask, low: g.low };
+            }
+            const b = greenBounds();
+            const step = 0.1;
+            const cols = Math.ceil((b.x1 - b.x0) / step), rows = Math.ceil((b.z1 - b.z0) / step);
+            const h = new Float32Array(cols * rows), mask = new Uint8Array(cols * rows).fill(1);
+            for (let r = 0; r < rows; r++) for (let c = 0; c < cols; c++)
+                h[r * cols + c] = getHeight(b.x0 + (c + 0.5) * step, b.z0 + (r + 0.5) * step);
+            return { cols, rows, x0: b.x0, z0: b.z0, dx: step, dz: step, h, mask, low: null };
+        }
+
+        function niceInterval(range) {
+            const target = range / 14;
+            const opts = [0.005, 0.01, 0.02, 0.025, 0.05, 0.1];
+            for (const o of opts) if (o >= target) return o;
+            return 0.1;
+        }
+
+        function buildBackground() {
+            const off = document.createElement('canvas');
+            off.width = Math.max(1, Math.round(canvasWidth * dpr));
+            off.height = Math.max(1, Math.round(canvasHeight * dpr));
+            const c = off.getContext('2d');
+            c.setTransform(dpr, 0, 0, dpr, 0, 0);
+            c.fillStyle = '#141414';
+            c.fillRect(0, 0, canvasWidth, canvasHeight);
+            const S = sampleGreenGrid();
+            const v = viewTransform();
+            let hmin = Infinity, hmax = -Infinity;
+            for (let i = 0; i < S.h.length; i++) if (S.mask[i]) { hmin = Math.min(hmin, S.h[i]); hmax = Math.max(hmax, S.h[i]); }
+            const range = Math.max(0.01, hmax - hmin);
+            const cw = S.dx * v.s, ch = S.dz * v.s;
+            // Heat/shade cells
+            for (let r = 0; r < S.rows; r++) {
+                for (let col = 0; col < S.cols; col++) {
+                    const i = r * S.cols + col;
+                    if (!S.mask[i]) continue;
+                    const x = S.x0 + col * S.dx, z = S.z0 + r * S.dz;
+                    const sx = x * v.s + v.ox, sy = z * v.s + v.oy;
+                    const t = (S.h[i] - hmin) / range;
+                    const grad = getGradient(x + S.dx / 2, z + S.dz / 2);
+                    const slope = Math.hypot(grad.x, grad.z);
+                    const shade = Math.max(0.55, 1 - slope * 3);
+                    let R = (26 + t * 81) * shade, Gc = (77 + t * 82) * shade, B = (46 + t * 74) * shade;
+                    c.fillStyle = `rgb(${R | 0}, ${Gc | 0}, ${B | 0})`;
+                    c.fillRect(sx, sy, cw + 0.6, ch + 0.6);
                 }
             }
-            
-            // Draw contour lines with STRONGER contrast (console-style)
-            const contourInterval = 0.01; // 1cm contours
-            const contourLevels = [];
-            for (let h = -0.03; h <= 0.03; h += contourInterval) {
-                contourLevels.push(h);
+            if (S.low) {
+                // Faint hatching where the scan has two overlapping surfaces (less certain heights).
+                c.strokeStyle = 'rgba(255, 255, 255, 0.10)';
+                c.lineWidth = 1;
+                c.beginPath();
+                for (let r = 0; r < S.rows; r++) for (let col = 0; col < S.cols; col++) {
+                    const i = r * S.cols + col;
+                    if (!S.low[i] || !S.mask[i] || (r + col) % 2) continue;
+                    const sx = (S.x0 + col * S.dx) * v.s + v.ox, sy = (S.z0 + r * S.dz) * v.s + v.oy;
+                    c.moveTo(sx, sy + ch); c.lineTo(sx + cw, sy);
+                }
+                c.stroke();
             }
-            
-            // Draw contour lines with glow effect
-            contourLevels.forEach((level, idx) => {
-                // Every 5th contour is thicker (5cm major contours)
-                const isMajor = idx % 5 === 0;
-                
-                // Scan and draw contours
-                ctx.beginPath();
-                let started = false;
-                
-                for (let j = 0; j < canvasHeight; j += 2) {
-                    for (let i = 0; i < canvasWidth; i += 2) {
-                        const world = screenToWorld({ x: i, y: j });
-                        const h = getHeight(world.x, world.z);
-                        
-                        if (Math.abs(h - level) < 0.002) {
-                            if (!started) {
-                                ctx.moveTo(i, j);
-                                started = true;
-                            } else {
-                                ctx.lineTo(i, j);
+            if (showContours) {
+                // Marching squares contours on the sampled grid.
+                const interval = niceInterval(range);
+                const first = Math.ceil(hmin / interval) * interval;
+                let idx = 0;
+                for (let level = first; level <= hmax; level += interval, idx++) {
+                    const major = Math.round(level / interval) % 5 === 0;
+                    c.beginPath();
+                    for (let r = 0; r < S.rows - 1; r++) {
+                        for (let col = 0; col < S.cols - 1; col++) {
+                            const i00 = r * S.cols + col, i10 = i00 + 1, i01 = i00 + S.cols, i11 = i01 + 1;
+                            if (!(S.mask[i00] && S.mask[i10] && S.mask[i01] && S.mask[i11])) continue;
+                            const a = S.h[i00], b = S.h[i10], d = S.h[i01], e = S.h[i11];
+                            const code = (a > level ? 1 : 0) | (b > level ? 2 : 0) | (e > level ? 4 : 0) | (d > level ? 8 : 0);
+                            if (code === 0 || code === 15) continue;
+                            const X = (cc) => (S.x0 + (cc + 0.5) * S.dx) * v.s + v.ox;
+                            const Y = (rr) => (S.z0 + (rr + 0.5) * S.dz) * v.s + v.oy;
+                            const pts = [];
+                            const edge = (p, q, cp, cq, rp, rq) => {
+                                const tt = (level - p) / (q - p);
+                                pts.push([X(cp + (cq - cp) * tt), Y(rp + (rq - rp) * tt)]);
+                            };
+                            if ((a > level) !== (b > level)) edge(a, b, col, col + 1, r, r);
+                            if ((b > level) !== (e > level)) edge(b, e, col + 1, col + 1, r, r + 1);
+                            if ((d > level) !== (e > level)) edge(d, e, col, col + 1, r + 1, r + 1);
+                            if ((a > level) !== (d > level)) edge(a, d, col, col, r, r + 1);
+                            for (let k = 0; k + 1 < pts.length; k += 2) {
+                                c.moveTo(pts[k][0], pts[k][1]);
+                                c.lineTo(pts[k + 1][0], pts[k + 1][1]);
                             }
                         }
                     }
+                    if (major) {
+                        c.strokeStyle = 'rgba(255, 255, 255, 0.15)'; c.lineWidth = 3; c.stroke();
+                        c.strokeStyle = 'rgba(255, 255, 255, 0.45)'; c.lineWidth = 1.5; c.stroke();
+                    } else {
+                        c.strokeStyle = 'rgba(255, 255, 255, 0.2)'; c.lineWidth = 1; c.stroke();
+                    }
                 }
-                
-                // Draw with glow
-                if (isMajor) {
-                    // Major contour: bright with glow
-                    ctx.strokeStyle = 'rgba(255, 255, 255, 0.15)';
-                    ctx.lineWidth = 3;
-                    ctx.stroke();
-                    
-                    ctx.strokeStyle = 'rgba(255, 255, 255, 0.4)';
-                    ctx.lineWidth = 1.5;
-                    ctx.stroke();
-                } else {
-                    // Minor contour: subtle
-                    ctx.strokeStyle = 'rgba(255, 255, 255, 0.12)';
-                    ctx.lineWidth = 1;
-                    ctx.stroke();
+                // Downhill arrows (fall line), about every 0.8 m on screen-size greens.
+                const spacing = Math.max(0.5, Math.round((Math.min(S.cols * S.dx, S.rows * S.dz) / 9) * 2) / 2);
+                const b = selectedPreset.kind === 'grid' ? selectedPreset.bounds : greenBounds();
+                c.strokeStyle = 'rgba(255, 255, 255, 0.55)';
+                c.fillStyle = 'rgba(255, 255, 255, 0.55)';
+                c.lineWidth = 1.5;
+                for (let z = b.z0 + spacing / 2; z < b.z1; z += spacing) {
+                    for (let x = b.x0 + spacing / 2; x < b.x1; x += spacing) {
+                        if (!isOnGreen(x, z)) continue;
+                        const gr = getGradient(x, z);
+                        const sl = Math.hypot(gr.x, gr.z);
+                        if (sl < 0.004) continue;
+                        const len = Math.min(18, 6 + sl * 250);
+                        const ux = -gr.x / sl, uz = -gr.z / sl;
+                        const sx = x * v.s + v.ox, sy = z * v.s + v.oy;
+                        const ex = sx + ux * len, ey = sy + uz * len;
+                        c.beginPath(); c.moveTo(sx - ux * len * 0.3, sy - uz * len * 0.3); c.lineTo(ex, ey); c.stroke();
+                        c.beginPath();
+                        c.moveTo(ex, ey);
+                        c.lineTo(ex - ux * 5 - uz * 3.5, ey - uz * 5 + ux * 3.5);
+                        c.lineTo(ex - ux * 5 + uz * 3.5, ey - uz * 5 - ux * 3.5);
+                        c.closePath(); c.fill();
+                    }
                 }
-            });
-            
-            // Grid overlay for depth
-            ctx.strokeStyle = 'rgba(0, 0, 0, 0.1)';
-            ctx.lineWidth = 0.5;
-            for (let i = 0; i <= gridSize; i++) {
-                ctx.beginPath();
-                ctx.moveTo(i * cellWidth, 0);
-                ctx.lineTo(i * cellWidth, canvasHeight);
-                ctx.stroke();
-                
-                ctx.beginPath();
-                ctx.moveTo(0, i * cellHeight);
-                ctx.lineTo(canvasWidth, i * cellHeight);
-                ctx.stroke();
             }
+            // Scale bar
+            c.fillStyle = 'rgba(255,255,255,0.7)';
+            c.fillRect(12, canvasHeight - 18, v.s, 3);
+            c.font = '10px sans-serif'; c.textAlign = 'left';
+            c.fillText('1 m', 12, canvasHeight - 23);
+            return off;
+        }
+
+        let bgView = { z: 1, x: 0, y: 0 };
+        let gestureActive = false;
+        function drawBackground() {
+            const key = [selectedPreset.id, canvasWidth, canvasHeight, dpr, showContours, viewZoom, viewPanX, viewPanY].join('|');
+            if (!bgCanvas || (key !== bgCacheKey && !gestureActive)) {
+                bgCanvas = buildBackground();
+                bgCacheKey = key;
+                bgView = { z: viewZoom, x: viewPanX, y: viewPanY };
+            }
+            // During a pinch/drag, reuse the cached image scaled to the live view; rebuilt when the gesture ends.
+            const r = viewZoom / bgView.z;
+            ctx.save();
+            ctx.setTransform(r * dpr, 0, 0, r * dpr, (viewPanX - bgView.x * r) * dpr, (viewPanY - bgView.y * r) * dpr);
+            ctx.fillStyle = '#141414';
+            if (r !== 1 || viewPanX !== bgView.x || viewPanY !== bgView.y) { ctx.save(); ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.fillRect(0, 0, canvas.width, canvas.height); ctx.restore(); }
+            ctx.drawImage(bgCanvas, 0, 0, bgCanvas.width / dpr, bgCanvas.height / dpr);
+            ctx.restore();
         }
 
         function renderPuttLine() {
             // SOLVE for aim that sinks the putt
-            const solution = solveAimAngle(ballMarker, holeMarker, puttPower);
+            const solution = getSolution();
+            if (!solution) return;
             const sinkPath = solution.sinkPath;
             const naivePath = solution.naivePath;
             
@@ -982,8 +1130,9 @@
                 ctx.fillStyle = 'rgba(255, 180, 80, 0.95)';
                 ctx.font = 'bold 13px sans-serif';
                 ctx.textAlign = 'center';
-                ctx.fillText('This pace does not reach the hole', canvasWidth/2, 28);
+                ctx.fillText(solution.runsOff ? 'No make at this pace (ball runs off the scanned green)' : 'No make line at this pace', canvasWidth/2, 64);
             }
+            if (solution.missed) return; // never draw a line that does not finish in the hole
             if (sinkPath.length < 2) return;
             if (!solution.missed) sinkPath[sinkPath.length - 1] = { x: holeMarker.x, z: holeMarker.z };
             
@@ -1263,139 +1412,544 @@
         }
 
         // ============================================
+        // SCAN FILE -> HEIGHT MAP (on the phone)
+        // ============================================
+        // Same steps as the Oct 19 green: gravity up axis, 10 cm cells, median per cell,
+        // drop points > 8 cm off the local surface, fill small gaps, mask big holes, smooth.
+
+        var PLY_TYPES = {
+            char: 1, int8: 1, uchar: 1, uint8: 1,
+            short: 2, int16: 2, ushort: 2, uint16: 2,
+            int: 4, int32: 4, uint: 4, uint32: 4,
+            float: 4, float32: 4, double: 8, float64: 8
+        };
+
+        function findHeaderEnd(bytes) {
+            var marker = [101,110,100,95,104,101,97,100,101,114];
+            var limit = Math.min(bytes.length, 2000000);
+            for (var i = 0; i < limit; i++) {
+                var ok = true;
+                for (var k = 0; k < marker.length; k++) { if (bytes[i + k] !== marker[k]) { ok = false; break; } }
+                if (!ok) continue;
+                var j = i + marker.length;
+                if (bytes[j] === 13) j++;
+                if (bytes[j] === 10) j++;
+                else if (bytes[j] !== 10 && bytes[j] !== undefined) continue;
+                return j;
+            }
+            return -1;
+        }
+
+        // Returns {x, y, z} Float32Arrays (decimated to <= 300k points).
+        function parsePLYPoints(arrayBuffer) {
+            var bytes = new Uint8Array(arrayBuffer);
+            var headerEnd = findHeaderEnd(bytes);
+            if (headerEnd < 0) throw new Error('Not a PLY file (no end_header)');
+            var header = new TextDecoder('utf-8').decode(bytes.subarray(0, headerEnd));
+            var lines = header.split(/\r?\n/);
+            var format = 'ascii', vertexCount = 0, inVertex = false, props = [];
+            for (var li = 0; li < lines.length; li++) {
+                var line = lines[li].trim();
+                if (!line || line.indexOf('comment') === 0) continue;
+                if (line.indexOf('format ') === 0) format = line.split(/\s+/)[1];
+                else if (line.indexOf('element ') === 0) {
+                    var ep = line.split(/\s+/);
+                    inVertex = ep[1] === 'vertex';
+                    if (inVertex) vertexCount = parseInt(ep[2], 10) || 0;
+                } else if (inVertex && line.indexOf('property ') === 0) {
+                    var pp = line.split(/\s+/);
+                    if (pp[1] === 'list') throw new Error('This PLY is a mesh, not a point cloud. Export Point Cloud, then PLY.');
+                    props.push({ type: pp[1], name: pp[2] });
+                }
+            }
+            if (!vertexCount) throw new Error('PLY has no vertices');
+            var xi = -1, yi = -1, zi = -1;
+            for (var pi = 0; pi < props.length; pi++) {
+                if (props[pi].name === 'x') xi = pi;
+                if (props[pi].name === 'y') yi = pi;
+                if (props[pi].name === 'z') zi = pi;
+            }
+            if (xi < 0 || yi < 0 || zi < 0) throw new Error('PLY has no x y z');
+            var offsets = [], stride = 0;
+            for (var ti = 0; ti < props.length; ti++) {
+                var sz = PLY_TYPES[props[ti].type];
+                if (!sz) throw new Error('Unsupported PLY property type: ' + props[ti].type);
+                offsets.push(stride); stride += sz;
+            }
+            var MAX_POINTS = 300000;
+            var step = Math.max(1, Math.ceil(vertexCount / MAX_POINTS));
+            var cap = Math.ceil(vertexCount / step) + 1;
+            var X = new Float32Array(cap), Y = new Float32Array(cap), Z = new Float32Array(cap), n = 0;
+            function push(x, y, z) { if (isFinite(x) && isFinite(y) && isFinite(z) && n < cap) { X[n] = x; Y[n] = y; Z[n] = z; n++; } }
+            if (format === 'ascii') {
+                var text = new TextDecoder('utf-8').decode(bytes.subarray(headerEnd));
+                var pos = 0, seen = 0, L = text.length;
+                while (pos < L && seen < vertexCount) {
+                    var nl = text.indexOf('\n', pos); if (nl < 0) nl = L;
+                    if (seen % step === 0) {
+                        var parts = text.substring(pos, nl).trim().split(/\s+/);
+                        if (parts.length >= props.length) push(+parts[xi], +parts[yi], +parts[zi]);
+                    }
+                    seen++; pos = nl + 1;
+                }
+            } else if (format === 'binary_little_endian' || format === 'binary_big_endian') {
+                var view = new DataView(arrayBuffer, headerEnd);
+                var little = format === 'binary_little_endian';
+                function readNum(type, off) {
+                    if (type === 'float' || type === 'float32') return view.getFloat32(off, little);
+                    if (type === 'double' || type === 'float64') return view.getFloat64(off, little);
+                    if (type === 'char' || type === 'int8') return view.getInt8(off);
+                    if (type === 'uchar' || type === 'uint8') return view.getUint8(off);
+                    if (type === 'short' || type === 'int16') return view.getInt16(off, little);
+                    if (type === 'ushort' || type === 'uint16') return view.getUint16(off, little);
+                    if (type === 'int' || type === 'int32') return view.getInt32(off, little);
+                    if (type === 'uint' || type === 'uint32') return view.getUint32(off, little);
+                    return NaN;
+                }
+                var avail = Math.min(vertexCount, Math.floor(view.byteLength / stride));
+                for (var vi = 0; vi < avail; vi += step) {
+                    var base = vi * stride;
+                    push(readNum(props[xi].type, base + offsets[xi]), readNum(props[yi].type, base + offsets[yi]), readNum(props[zi].type, base + offsets[zi]));
+                }
+            } else throw new Error('Unsupported PLY format: ' + format);
+            return { x: X.subarray(0, n), y: Y.subarray(0, n), z: Z.subarray(0, n), total: vertexCount };
+        }
+
+        function pickUpAxis(P) {
+            // Dominant plane by RANSAC, snapped to the closest axis (ARKit/LiDARo = Y up).
+            var s = 12345 >>> 0;
+            function rnd() { s = (s + 0x6D2B79F5) >>> 0; var t = s; t = Math.imul(t ^ (t >>> 15), t | 1); t ^= t + Math.imul(t ^ (t >>> 7), t | 61); return ((t ^ (t >>> 14)) >>> 0) / 4294967296; }
+            var n = P.x.length, best = [0, 1, 0], bestCount = -1, sample = [];
+            for (var k = 0; k < Math.min(n, 3000); k++) sample.push(Math.floor(rnd() * n));
+            for (var it = 0; it < 200; it++) {
+                var a = Math.floor(rnd() * n), b = Math.floor(rnd() * n), c = Math.floor(rnd() * n);
+                var ux = P.x[b] - P.x[a], uy = P.y[b] - P.y[a], uz = P.z[b] - P.z[a];
+                var vx = P.x[c] - P.x[a], vy = P.y[c] - P.y[a], vz = P.z[c] - P.z[a];
+                var nx = uy * vz - uz * vy, ny = uz * vx - ux * vz, nz = ux * vy - uy * vx;
+                var len = Math.hypot(nx, ny, nz); if (len < 1e-9) continue;
+                nx /= len; ny /= len; nz /= len;
+                var d = -(nx * P.x[a] + ny * P.y[a] + nz * P.z[a]), cnt = 0;
+                for (var q = 0; q < sample.length; q++) { var i = sample[q]; if (Math.abs(nx * P.x[i] + ny * P.y[i] + nz * P.z[i] + d) < 0.03) cnt++; }
+                if (cnt > bestCount) { bestCount = cnt; best = [nx, ny, nz]; }
+            }
+            var comps = best.map(Math.abs), up = 1;
+            if (comps[2] > comps[up]) up = 2;
+            if (comps[0] > comps[up]) up = 0;
+            return up;
+        }
+
+        function pctl(sortedArr, p) {
+            if (!sortedArr.length) return 0;
+            var idx = (sortedArr.length - 1) * p, lo = Math.floor(idx), hi = Math.ceil(idx);
+            return sortedArr[lo] + (sortedArr[hi] - sortedArr[lo]) * (idx - lo);
+        }
+
+        function cellMedians(U, V, H, keep, ox, oz, cs, cols, rows, minCount) {
+            var n = U.length, ncell = cols * rows;
+            var counts = new Int32Array(ncell + 1);
+            var cellOf = new Int32Array(n).fill(-1);
+            for (var i = 0; i < n; i++) {
+                if (keep && !keep[i]) continue;
+                var c = Math.floor((U[i] - ox) / cs), r = Math.floor((V[i] - oz) / cs);
+                if (c < 0 || r < 0 || c >= cols || r >= rows) continue;
+                cellOf[i] = r * cols + c; counts[r * cols + c + 1]++;
+            }
+            for (var k = 0; k < ncell; k++) counts[k + 1] += counts[k];
+            var fillPos = counts.slice(0, ncell), vals = new Float32Array(counts[ncell]);
+            for (var i2 = 0; i2 < n; i2++) if (cellOf[i2] >= 0) vals[fillPos[cellOf[i2]]++] = H[i2];
+            var out = new Float32Array(ncell).fill(NaN);
+            for (var k2 = 0; k2 < ncell; k2++) {
+                var a = counts[k2], b = counts[k2 + 1];
+                if (b - a < minCount) continue;
+                var arr = Array.prototype.slice.call(vals.subarray(a, b)).sort(function (p, q) { return p - q; });
+                out[k2] = pctl(arr, 0.5);
+            }
+            return out;
+        }
+
+        function pointsToHeightmap(P, name) {
+            var up = pickUpAxis(P);
+            var A = [P.x, P.y, P.z];
+            // Screen axes: Y-up -> (x, z); Z-up -> (x, -y); X-up -> (y, z)
+            var n = P.x.length;
+            var U = up === 0 ? A[1] : A[0];
+            var V = new Float32Array(n), H = A[up];
+            for (var i = 0; i < n; i++) V[i] = up === 2 ? -A[1][i] : A[2][i];
+            var us = Array.prototype.slice.call(U).sort(function (a, b) { return a - b; });
+            var vs = Array.prototype.slice.call(V).sort(function (a, b) { return a - b; });
+            var u0 = pctl(us, 0.002), u1 = pctl(us, 0.998), v0 = pctl(vs, 0.002), v1 = pctl(vs, 0.998);
+            var cs = Math.max(0.1, Math.max(u1 - u0, v1 - v0) / 160);
+            var ox = Math.floor(u0 / cs) * cs, oz = Math.floor(v0 / cs) * cs;
+            var cols = Math.ceil((u1 - ox) / cs) + 1, rows = Math.ceil((v1 - oz) / cs) + 1;
+            // Coarse 40 cm surface, then drop points > 8 cm off it (people, bag, flagstick, noise).
+            var C = Math.max(0.4, cs * 4), ccols = Math.ceil((u1 - ox) / C) + 1, crows = Math.ceil((v1 - oz) / C) + 1;
+            var coarse = cellMedians(U, V, H, null, ox, oz, C, ccols, crows, 8);
+            var keep = new Uint8Array(n);
+            var dropped = 0;
+            for (var i3 = 0; i3 < n; i3++) {
+                var cc = Math.floor((U[i3] - ox) / C), cr = Math.floor((V[i3] - oz) / C);
+                var ref = (cc >= 0 && cr >= 0 && cc < ccols && cr < crows) ? coarse[cr * ccols + cc] : NaN;
+                if (isFinite(ref) && Math.abs(H[i3] - ref) < 0.08) keep[i3] = 1; else dropped++;
+            }
+            var G = cellMedians(U, V, H, keep, ox, oz, cs, cols, rows, 3);
+            // Fill small gaps: a cell with >= 5 of 8 measured neighbours gets their mean.
+            for (var it = 0; it < 6; it++) {
+                var add = [];
+                for (var r = 0; r < rows; r++) for (var c = 0; c < cols; c++) {
+                    if (isFinite(G[r * cols + c])) continue;
+                    var s = 0, m = 0;
+                    for (var dr = -1; dr <= 1; dr++) for (var dc = -1; dc <= 1; dc++) {
+                        if (!dr && !dc) continue;
+                        var rr = r + dr, c2 = c + dc;
+                        if (rr < 0 || c2 < 0 || rr >= rows || c2 >= cols) continue;
+                        var vv = G[rr * cols + c2]; if (isFinite(vv)) { s += vv; m++; }
+                    }
+                    if (m >= 5) add.push([r * cols + c, s / m]);
+                }
+                if (!add.length) break;
+                add.forEach(function (e) { G[e[0]] = e[1]; });
+            }
+            // Mask: measured cells, minus specks under 1 m^2.
+            var ncell = cols * rows, mask = new Uint8Array(ncell), lab = new Int32Array(ncell), minCells = Math.round(1 / (cs * cs));
+            for (var k = 0; k < ncell; k++) mask[k] = isFinite(G[k]) ? 1 : 0;
+            var cur = 0;
+            for (var k2 = 0; k2 < ncell; k2++) {
+                if (!mask[k2] || lab[k2]) continue;
+                cur++; var stack = [k2], comp = []; lab[k2] = cur;
+                while (stack.length) {
+                    var q = stack.pop(); comp.push(q);
+                    var qr = (q / cols) | 0, qc = q - qr * cols;
+                    var nb = [qr > 0 ? q - cols : -1, qr < rows - 1 ? q + cols : -1, qc > 0 ? q - 1 : -1, qc < cols - 1 ? q + 1 : -1];
+                    for (var t = 0; t < 4; t++) { var j = nb[t]; if (j >= 0 && mask[j] && !lab[j]) { lab[j] = cur; stack.push(j); } }
+                }
+                if (comp.length < minCells) comp.forEach(function (q2) { mask[q2] = 0; });
+            }
+            // Masked Gaussian smoothing, sigma 1.5 cells.
+            var sig = 1.5, R = 4, ker = [];
+            for (var d = -R; d <= R; d++) ker.push(Math.exp(-0.5 * (d / sig) * (d / sig)));
+            function blur(src, w, horiz) {
+                var out = new Float32Array(ncell), wout = new Float32Array(ncell);
+                for (var r = 0; r < rows; r++) for (var c = 0; c < cols; c++) {
+                    var s = 0, ws = 0;
+                    for (var d = -R; d <= R; d++) {
+                        var rr = horiz ? r : r + d, c2 = horiz ? c + d : c;
+                        if (rr < 0 || c2 < 0 || rr >= rows || c2 >= cols) continue;
+                        var kk = ker[d + R]; s += src[rr * cols + c2] * kk; ws += w[rr * cols + c2] * kk;
+                    }
+                    out[r * cols + c] = s; wout[r * cols + c] = ws;
+                }
+                return [out, wout];
+            }
+            var A0 = new Float32Array(ncell), W0 = new Float32Array(ncell);
+            for (var k3 = 0; k3 < ncell; k3++) if (mask[k3]) { A0[k3] = G[k3]; W0[k3] = 1; }
+            var h1 = blur(A0, W0, true), h2 = blur(h1[0], h1[1], false);
+            var hmin = Infinity;
+            var Hs = new Float32Array(ncell);
+            for (var k4 = 0; k4 < ncell; k4++) {
+                Hs[k4] = mask[k4] && h2[1][k4] > 1e-6 ? h2[0][k4] / h2[1][k4] : NaN;
+                if (mask[k4] && isFinite(Hs[k4])) hmin = Math.min(hmin, Hs[k4]); else mask[k4] = 0;
+            }
+            var heights = [], maskRows = [];
+            for (var k5 = 0; k5 < ncell; k5++) heights.push(isFinite(Hs[k5]) ? Math.round((Hs[k5] - hmin) * 1000) : null);
+            for (var r2 = 0; r2 < rows; r2++) {
+                var srow = '';
+                for (var c3 = 0; c3 < cols; c3++) srow += mask[r2 * cols + c3] ? '1' : '0';
+                maskRows.push(srow);
+            }
+            return {
+                format: 'puttguide-heightmap', version: 1, name: name || 'Loaded scan',
+                cellSize: cs, cols: cols, rows: rows, origin: { x: ox, z: oz }, heightUnits: 'mm',
+                heights: heights, mask: maskRows, upAxis: 'xyz'.charAt(up), droppedPoints: dropped, totalPoints: P.total
+            };
+        }
+
+        function loadHeightmapObject(json, id) {
+            if (json && json.heightData && !json.heights) json = checkerJsonToHeightmap(json);
+            if (!json || !json.heights || !json.cols || !json.rows) throw new Error('Not a PuttGuide height map');
+            const g = makeGridGreen(json, id);
+            g.fromChecker = !!json.lowCoverage;
+            const existing = realGreens.findIndex(r => r.id === g.id);
+            if (existing >= 0) realGreens[existing] = g; else realGreens.push(g);
+            return g;
+        }
+
+        function handleScanFile(file) {
+            if (!file) return;
+            showToast('Reading ' + file.name + '…', 0);
+            const reader = new FileReader();
+            reader.onerror = () => showToast('Could not read that file', 3500);
+            reader.onload = () => {
+                setTimeout(() => {
+                    try {
+                        const buf = reader.result;
+                        const head = new TextDecoder('utf-8').decode(new Uint8Array(buf, 0, Math.min(16, buf.byteLength))).trim();
+                        let g;
+                        let shortName = file.name.replace(/\.[^.]+$/, '');
+                        if (shortName.length > 18) shortName = shortName.slice(0, 8) + '…' + shortName.slice(-6);
+                        if (head.indexOf('ply') === 0) {
+                            const P = parsePLYPoints(buf);
+                            if (P.x.length < 500) throw new Error('Too few points in this scan');
+                            g = loadHeightmapObject(pointsToHeightmap(P, 'Scan: ' + shortName), 'file-' + Date.now());
+                        } else {
+                            const json = JSON.parse(new TextDecoder('utf-8').decode(new Uint8Array(buf)));
+                            if (!json.name) json.name = 'Scan: ' + shortName;
+                            g = loadHeightmapObject(json, 'file-' + Date.now());
+                        }
+                        selectGreen(g);
+                        showToast('Loaded ' + g.name, 2500);
+                    } catch (err) {
+                        showToast('Could not load: ' + err.message, 5000);
+                    }
+                }, 30);
+            };
+            reader.readAsArrayBuffer(file);
+        }
+
+        // ============================================
         // UI UPDATES
         // ============================================
-        
+
+        let toastTimer = null;
+        function showToast(msg, ms) {
+            const t = document.getElementById('toast');
+            t.textContent = msg;
+            t.style.display = 'block';
+            if (toastTimer) clearTimeout(toastTimer);
+            if (ms) toastTimer = setTimeout(() => { t.style.display = 'none'; }, ms);
+        }
+
+        function fallWords(gx, gz) {
+            // Downhill direction = -gradient. Screen: +x right, +z toward the bottom (toward where the scan started).
+            const dx = -gx, dz = -gz;
+            const parts = [];
+            if (Math.abs(dx) > 0.35 * Math.hypot(dx, dz)) parts.push(dx > 0 ? 'right' : 'left');
+            if (Math.abs(dz) > 0.35 * Math.hypot(dx, dz)) parts.push(dz > 0 ? 'toward the bottom' : 'toward the top');
+            return parts.join(' and ');
+        }
+
+        function updateGreenInfo() {
+            const el = document.getElementById('green-info');
+            const disc = document.getElementById('disclaimer');
+            const g = selectedPreset;
+            if (g.kind === 'grid') {
+                const s = g.stats;
+                let txt = `<b>${g.name}</b><br>${s.areaM2.toFixed(0)} m² measured · ${(s.rangeM * 100).toFixed(0)} cm high-to-low · ` +
+                    `typical slope ${(s.medianSlope * 100).toFixed(1)}% · falls ${fallWords(s.meanGx, s.meanGz)} overall.`;
+                if (s.lowM2 > 1) txt += `<br>Faint hatching = ${s.lowM2.toFixed(0)} m² where the scan doubled up; heights there are ±4 cm.`;
+                if (g.fromChecker) txt += `<br>Checker height maps are coarse and have no off-green mask; the PLY file gives a better map.`;
+                el.innerHTML = txt;
+                disc.innerHTML = '<strong>📡 Measured green:</strong> heights from your LiDAR scan (10 cm grid, lightly smoothed, real tilt kept). ' +
+                    'Top of the screen is the direction you faced when you started scanning. Putts stop at the edge of the scanned area. ' +
+                    'Physics: rolling ball, 5/7 g slope pull, friction from the Stimp setting.';
+            } else {
+                el.innerHTML = '';
+                disc.innerHTML = '<strong>⚠️ Simulated Green:</strong> This is a VIDEO GAME simulation with synthetic contours. Not measured from real greens. ' +
+                    'Putt physics: rolling ball, 5/7 g slope pull, friction from the Stimp setting. For practice visualization only.';
+            }
+            document.getElementById('header-badge').textContent = g.kind === 'grid' ? 'Real scan' : '3D Contour View';
+        }
+
         function updateUI() {
             const hasMarkers = holeMarker && ballMarker;
-            
             document.getElementById('distance-section').style.display = hasMarkers ? 'block' : 'none';
-            
+            const powerFraction = puttPower / 100;
+            let puttType = 'Soft';
+            if (powerFraction > 0.67) puttType = 'Hard';
+            else if (powerFraction > 0.33) puttType = 'Medium';
+            const sol = getSolution();
             if (hasMarkers) {
                 const dist = distance(ballMarker, holeMarker);
                 document.getElementById('distance-value').textContent = dist.toFixed(1) + 'm';
-                
-                const velocity = launchSpeed(dist, puttPower, ballMarker, holeMarker);
-                const powerFraction = puttPower / 100;
-                let puttType = 'Soft';
-                if (powerFraction > 0.67) puttType = 'Hard';
-                else if (powerFraction > 0.33) puttType = 'Medium';
-                
-                document.getElementById('info-overlay').textContent = 
-                    `${dist.toFixed(1)}m · ${puttType} (${velocity.toFixed(1)} m/s) · ${selectedPreset.name}`;
+                const dh = (getHeight(holeMarker.x, holeMarker.z) - getHeight(ballMarker.x, ballMarker.z)) * 100;
+                const hill = Math.abs(dh) < 1 ? 'level' : (dh > 0 ? `${dh.toFixed(0)} cm uphill` : `${(-dh).toFixed(0)} cm downhill`);
+                document.getElementById('info-overlay').textContent =
+                    `${dist.toFixed(1)}m · ${hill} · ${puttType}` + (sol && !sol.missed ? ` (${sol.v0.toFixed(1)} m/s)` : '');
             } else {
-                document.getElementById('info-overlay').textContent = 'Tap to place hole and ball';
+                document.getElementById('info-overlay').textContent = placementMode ? `Tap the green to place the ${placementMode}` : 'Tap 🚩 Hole or ⚪ Ball, then tap the green';
             }
-            
             document.getElementById('power-value').textContent = puttPower + '%';
-            
-            // Calculate actual speed using distance-aware model
-            const powerFraction = puttPower / 100;
-            const velocity = (ballMarker && holeMarker)
-                ? launchSpeed(distance(ballMarker, holeMarker), puttPower, ballMarker, holeMarker)
-                : launchSpeed(3, puttPower);
-            let label = `Soft (${velocity.toFixed(1)} m/s)`;
-            if (powerFraction > 0.67) label = `Hard (${velocity.toFixed(1)} m/s)`;
-            else if (powerFraction > 0.33) label = `Medium (${velocity.toFixed(1)} m/s)`;
-            document.getElementById('power-label').textContent = label;
-            
-            document.getElementById('toggle-contours-btn').textContent = 
-                showContours ? 'Hide Contours' : 'Show Contours';
-            document.getElementById('toggle-line-btn').textContent = 
-                showLine ? 'Hide Line' : 'Show Line';
-            
+            const pace = paceForPower(puttPower);
+            document.getElementById('power-label').textContent = `${puttType} · rolls ~${pace < 0.15 ? 'to the cup' : pace.toFixed(1) + 'm past'}`;
+            document.getElementById('stimp-value').textContent = stimp.toFixed(stimp % 1 ? 1 : 0);
+            document.getElementById('toggle-contours-btn').textContent = showContours ? 'Hide Contours' : 'Show Contours';
+            document.getElementById('toggle-line-btn').textContent = showLine ? 'Hide Line' : 'Show Line';
             render();
+        }
+
+        // Coalesce slider drags into one solve per frame (keeps iPhone responsive).
+        let uiPending = false;
+        function scheduleUI() {
+            if (uiPending) return;
+            uiPending = true;
+            (window.requestAnimationFrame || setTimeout)(() => { uiPending = false; updateUI(); });
+        }
+
+        function defaultMarkersFor(g) {
+            // A first putt to look at on the real green: sidehill, in the cleanly scanned part.
+            if (g.id === 'real-green-1') return { ball: { x: 0.0, z: 0.4 }, hole: { x: 0.4, z: -2.0 } };
+            return null;
+        }
+
+        function selectGreen(g) {
+            selectedPreset = g;
+            resetView();
+            bgCacheKey = '';
+            lastSolutionKey = '';
+            if (g.kind === 'grid') {
+                const okBall = ballMarker && isOnGreen(ballMarker.x, ballMarker.z);
+                const okHole = holeMarker && isOnGreen(holeMarker.x, holeMarker.z);
+                if (!okBall || !okHole) {
+                    const d = defaultMarkersFor(g);
+                    ballMarker = d && isOnGreen(d.ball.x, d.ball.z) ? d.ball : null;
+                    holeMarker = d && isOnGreen(d.hole.x, d.hole.z) ? d.hole : null;
+                }
+            } else {
+                const b = greenBounds();
+                const inside = (m) => m && m.x > b.x0 && m.x < b.x1 && m.z > b.z0 && m.z < b.z1;
+                if (!inside(ballMarker)) ballMarker = null;
+                if (!inside(holeMarker)) holeMarker = null;
+            }
+            if (g.kind === 'grid') zoomToPutt();
+            populatePresets();
+            updateGreenInfo();
+            updateUI();
         }
 
         function populatePresets() {
             const grid = document.getElementById('preset-grid');
             grid.innerHTML = '';
-            
-            PRESETS.forEach(preset => {
+            const add = (label, cls, active, onclick) => {
                 const btn = document.createElement('button');
-                btn.className = 'preset-btn';
-                if (preset.id === selectedPreset.id) btn.classList.add('active');
-                btn.textContent = preset.name;
-                btn.onclick = () => {
-                    selectedPreset = preset;
-                    document.querySelectorAll('.preset-btn').forEach(b => b.classList.remove('active'));
-                    btn.classList.add('active');
-                    updateUI();
-                };
+                btn.className = 'preset-btn ' + cls;
+                if (active) btn.classList.add('active');
+                btn.textContent = label;
+                btn.onclick = onclick;
                 grid.appendChild(btn);
-            });
+            };
+            realGreens.forEach(g => add('📡 ' + g.name, 'wide real', selectedPreset.id === g.id, () => selectGreen(g)));
+            if (!realGreens.some(g => g.id === 'real-green-1')) {
+                add('📡 My green (Oct 19 scan)', 'wide real', false, () => loadRealGreen(true));
+            }
+            PRESETS.forEach(p => add(p.name, '', selectedPreset.id === p.id, () => selectGreen(p)));
+            add('📂 Load scan file (PLY or height map)', 'wide', false, () => document.getElementById('scan-file').click());
+        }
+
+        function loadRealGreen(select) {
+            return fetch(REAL_GREEN_URL, { cache: 'no-cache' })
+                .then(r => { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
+                .then(json => {
+                    const g = loadHeightmapObject(json, 'real-green-1');
+                    if (select) selectGreen(g); else populatePresets();
+                    return g;
+                })
+                .catch(err => { if (select) showToast('Could not load your green: ' + err.message, 4000); });
         }
 
         // ============================================
         // EVENT HANDLERS
         // ============================================
-        
+
         function handleCanvasTap(e) {
             if (!placementMode) return;
-            
             e.preventDefault();
-            
             const rect = canvas.getBoundingClientRect();
             const screenX = (e.clientX || e.touches?.[0]?.clientX || 0) - rect.left;
             const screenY = (e.clientY || e.touches?.[0]?.clientY || 0) - rect.top;
-            
             const world = screenToWorld({ x: screenX, y: screenY });
-            
-            if (placementMode === 'hole') {
-                holeMarker = world;
-            } else if (placementMode === 'ball') {
-                ballMarker = world;
+            if (!isOnGreen(world.x, world.z)) {
+                showToast('That spot is off the scanned green. Tap inside the colored area.', 2500);
+                return;
             }
-            
+            if (placementMode === 'hole') holeMarker = world;
+            else if (placementMode === 'ball') ballMarker = world;
             placementMode = null;
             updateUI();
         }
 
+        // Pointers: in placement mode a tap places the marker; otherwise one finger pans, two fingers zoom.
+        const activePointers = new Map();
+        let gestureStart = null;
+        function canvasPoint(e) {
+            const rect = canvas.getBoundingClientRect();
+            return { x: e.clientX - rect.left, y: e.clientY - rect.top };
+        }
+        function startGesture() {
+            const pts = [...activePointers.values()];
+            const mid = pts.length > 1 ? { x: (pts[0].x + pts[1].x) / 2, y: (pts[0].y + pts[1].y) / 2 } : pts[0];
+            const span = pts.length > 1 ? Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y) : 0;
+            gestureStart = { mid, span, zoom: viewZoom, panX: viewPanX, panY: viewPanY, n: pts.length };
+        }
+        function onPointerDown(e) {
+            if (placementMode) { handleCanvasTap(e); return; }
+            e.preventDefault();
+            if (canvas.setPointerCapture) { try { canvas.setPointerCapture(e.pointerId); } catch (_) {} }
+            activePointers.set(e.pointerId, canvasPoint(e));
+            gestureActive = true;
+            startGesture();
+        }
+        function onPointerMove(e) {
+            if (!activePointers.has(e.pointerId) || !gestureStart) return;
+            e.preventDefault();
+            activePointers.set(e.pointerId, canvasPoint(e));
+            const pts = [...activePointers.values()];
+            if (pts.length !== gestureStart.n) { startGesture(); return; }
+            const mid = pts.length > 1 ? { x: (pts[0].x + pts[1].x) / 2, y: (pts[0].y + pts[1].y) / 2 } : pts[0];
+            let z = gestureStart.zoom;
+            if (pts.length > 1 && gestureStart.span > 10) {
+                const span = Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y);
+                z = Math.max(1, Math.min(8, gestureStart.zoom * span / gestureStart.span));
+            }
+            const k = z / gestureStart.zoom;
+            viewZoom = z;
+            viewPanX = mid.x - (gestureStart.mid.x - gestureStart.panX) * k;
+            viewPanY = mid.y - (gestureStart.mid.y - gestureStart.panY) * k;
+            if (viewZoom === 1 && pts.length > 1) { viewPanX = 0; viewPanY = 0; }
+            render();
+        }
+        function onPointerUp(e) {
+            activePointers.delete(e.pointerId);
+            if (activePointers.size) { startGesture(); return; }
+            gestureActive = false;
+            gestureStart = null;
+            render();
+        }
         if ('PointerEvent' in window) {
-            canvas.addEventListener('pointerdown', handleCanvasTap);
+            canvas.addEventListener('pointerdown', onPointerDown);
+            canvas.addEventListener('pointermove', onPointerMove);
+            canvas.addEventListener('pointerup', onPointerUp);
+            canvas.addEventListener('pointercancel', onPointerUp);
         } else {
             canvas.addEventListener('touchstart', handleCanvasTap);
             canvas.addEventListener('click', handleCanvasTap);
         }
 
-        document.getElementById('place-hole-btn').addEventListener('click', () => {
-            placementMode = 'hole';
-        });
-
-        document.getElementById('place-ball-btn').addEventListener('click', () => {
-            placementMode = 'ball';
-        });
-
+        document.getElementById('place-hole-btn').addEventListener('click', () => { placementMode = 'hole'; updateUI(); });
+        document.getElementById('place-ball-btn').addEventListener('click', () => { placementMode = 'ball'; updateUI(); });
         document.getElementById('reset-btn').addEventListener('click', () => {
-            holeMarker = null;
-            ballMarker = null;
-            placementMode = null;
-            updateUI();
+            holeMarker = null; ballMarker = null; placementMode = null; updateUI();
         });
-
-        document.getElementById('power-slider').addEventListener('input', (e) => {
-            puttPower = parseInt(e.target.value);
-            updateUI();
-        });
-
-        document.getElementById('toggle-contours-btn').addEventListener('click', () => {
-            showContours = !showContours;
-            updateUI();
-        });
-
-        document.getElementById('toggle-line-btn').addEventListener('click', () => {
-            showLine = !showLine;
-            updateUI();
+        document.getElementById('power-slider').addEventListener('input', (e) => { puttPower = parseInt(e.target.value); scheduleUI(); });
+        document.getElementById('stimp-slider').addEventListener('input', (e) => { stimp = parseFloat(e.target.value); scheduleUI(); });
+        document.getElementById('toggle-contours-btn').addEventListener('click', () => { showContours = !showContours; updateUI(); });
+        document.getElementById('toggle-line-btn').addEventListener('click', () => { showLine = !showLine; updateUI(); });
+        document.getElementById('fit-view-btn').addEventListener('click', () => { resetView(); updateUI(); });
+        document.getElementById('scan-file').addEventListener('change', (e) => {
+            handleScanFile(e.target.files && e.target.files[0]);
+            e.target.value = '';
         });
 
         // ============================================
         // INITIALIZATION - AT END
         // ============================================
-        
+
         window.addEventListener('resize', resizeCanvas);
         populatePresets();
+        updateGreenInfo();
         resizeCanvas();
         updateUI();
+        // Open on the real green by default; ?green=preset keeps the synthetic ones.
+        if (!/green=preset/.test(window.location.search)) loadRealGreen(true);
+        else loadRealGreen(false);
     </script>
 </body>
 </html>
