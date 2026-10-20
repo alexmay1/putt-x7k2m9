@@ -297,6 +297,7 @@
                     <button class="btn btn-primary" id="place-ball-btn">⚪ Ball</button>
                     <button class="btn btn-danger" id="reset-btn">🔄 Reset</button>
                 </div>
+                <button class="btn btn-primary" id="ar-view-btn" style="width:100%;margin-top:8px;background:#22c55e;color:#000;font-weight:800">📷 See this putt in the camera (AR view)</button>
             </div>
 
             <!-- Distance -->
@@ -1683,18 +1684,21 @@
                     try {
                         const buf = reader.result;
                         const head = new TextDecoder('utf-8').decode(new Uint8Array(buf, 0, Math.min(16, buf.byteLength))).trim();
-                        let g;
+                        let g, hm;
                         let shortName = file.name.replace(/\.[^.]+$/, '');
                         if (shortName.length > 18) shortName = shortName.slice(0, 8) + '…' + shortName.slice(-6);
                         if (head.indexOf('ply') === 0) {
                             const P = parsePLYPoints(buf);
                             if (P.x.length < 500) throw new Error('Too few points in this scan');
-                            g = loadHeightmapObject(pointsToHeightmap(P, 'Scan: ' + shortName), 'file-' + Date.now());
+                            hm = pointsToHeightmap(P, 'Scan: ' + shortName);
+                            g = loadHeightmapObject(hm, LAST_SCAN_ID);
                         } else {
                             const json = JSON.parse(new TextDecoder('utf-8').decode(new Uint8Array(buf)));
                             if (!json.name) json.name = 'Scan: ' + shortName;
-                            g = loadHeightmapObject(json, 'file-' + Date.now());
+                            hm = json;
+                            g = loadHeightmapObject(json, LAST_SCAN_ID);
                         }
+                        rememberScan(hm, g);
                         selectGreen(g);
                         showToast('Loaded ' + g.name, 2500);
                     } catch (err) {
@@ -1703,6 +1707,59 @@
                 }, 30);
             };
             reader.readAsArrayBuffer(file);
+        }
+
+        // ============================================
+        // SHARED WITH THE AR VIEW (localStorage)
+        // ============================================
+        // The last loaded scan and the current putt are remembered so ar-view.html (and the next
+        // visit here) can use them without loading the file again.
+        const LAST_SCAN_ID = 'last-scan', LAST_SCAN_KEY = 'puttguide.lastScan', SIM_STATE_KEY = 'puttguide.simState';
+        let lastScanStamp = null;
+        function rememberScan(hm, g) {
+            lastScanStamp = Date.now();
+            try { localStorage.setItem(LAST_SCAN_KEY, JSON.stringify({ stamp: lastScanStamp, name: g.name, json: hm })); }
+            catch (_) { showToast('Loaded (too big to remember for the AR view)', 3000); }
+        }
+        function restoreLastScan() {
+            try {
+                const rec = JSON.parse(localStorage.getItem(LAST_SCAN_KEY) || 'null');
+                if (!rec || !rec.json) return null;
+                const g = loadHeightmapObject(rec.json, LAST_SCAN_ID);
+                if (rec.name) g.name = rec.name;
+                lastScanStamp = rec.stamp || null;
+                return g;
+            } catch (_) { return null; }
+        }
+        function saveSimState() {
+            try {
+                localStorage.setItem(SIM_STATE_KEY, JSON.stringify({
+                    greenId: selectedPreset.id, scanStamp: selectedPreset.id === LAST_SCAN_ID ? lastScanStamp : null,
+                    ball: ballMarker, hole: holeMarker, power: puttPower, stimp: stimp, t: Date.now()
+                }));
+            } catch (_) {}
+        }
+        function arViewHref() {
+            const q = new URLSearchParams();
+            q.set('green', selectedPreset.id);
+            if (ballMarker && holeMarker) {
+                q.set('bx', ballMarker.x.toFixed(3)); q.set('bz', ballMarker.z.toFixed(3));
+                q.set('hx', holeMarker.x.toFixed(3)); q.set('hz', holeMarker.z.toFixed(3));
+            }
+            q.set('p', String(puttPower)); q.set('s', String(stimp));
+            return 'ar-view.html?' + q.toString();
+        }
+        // ?green=<id>&bx=&bz=&hx=&hz=&p=&s= (links back from the AR view)
+        function applyUrlState() {
+            const q = new URLSearchParams(window.location.search);
+            const n = (k) => parseFloat(q.get(k));
+            if (isFinite(n('p'))) { puttPower = Math.max(0, Math.min(100, Math.round(n('p')))); document.getElementById('power-slider').value = puttPower; }
+            if (isFinite(n('s'))) { stimp = Math.max(6, Math.min(14, n('s'))); document.getElementById('stimp-slider').value = stimp; }
+            if ([n('bx'), n('bz'), n('hx'), n('hz')].every(isFinite)) {
+                const b = { x: n('bx'), z: n('bz') }, h = { x: n('hx'), z: n('hz') };
+                if (isOnGreen(b.x, b.z) && isOnGreen(h.x, h.z)) { ballMarker = b; holeMarker = h; if (selectedPreset.kind === 'grid') zoomToPutt(); }
+            }
+            updateUI();
         }
 
         // ============================================
@@ -1773,6 +1830,7 @@
             document.getElementById('stimp-value').textContent = stimp.toFixed(stimp % 1 ? 1 : 0);
             document.getElementById('toggle-contours-btn').textContent = showContours ? 'Hide Contours' : 'Show Contours';
             document.getElementById('toggle-line-btn').textContent = showLine ? 'Hide Line' : 'Show Line';
+            saveSimState();
             render();
         }
 
@@ -1933,6 +1991,7 @@
         document.getElementById('toggle-contours-btn').addEventListener('click', () => { showContours = !showContours; updateUI(); });
         document.getElementById('toggle-line-btn').addEventListener('click', () => { showLine = !showLine; updateUI(); });
         document.getElementById('fit-view-btn').addEventListener('click', () => { resetView(); updateUI(); });
+        document.getElementById('ar-view-btn').addEventListener('click', () => { saveSimState(); window.location.href = arViewHref(); });
         document.getElementById('scan-file').addEventListener('change', (e) => {
             handleScanFile(e.target.files && e.target.files[0]);
             e.target.value = '';
@@ -1947,9 +2006,18 @@
         updateGreenInfo();
         resizeCanvas();
         updateUI();
-        // Open on the real green by default; ?green=preset keeps the synthetic ones.
-        if (!/green=preset/.test(window.location.search)) loadRealGreen(true);
-        else loadRealGreen(false);
+        // Open on the real green by default; ?green=preset keeps the synthetic ones;
+        // ?green=last-scan (or a preset id) comes back from the AR view.
+        (function initGreen() {
+            const want = new URLSearchParams(window.location.search).get('green');
+            const remembered = restoreLastScan();
+            if (remembered) populatePresets();
+            const preset = PRESETS.find(p => p.id === want);
+            if (want === LAST_SCAN_ID && remembered) { selectGreen(remembered); applyUrlState(); loadRealGreen(false); }
+            else if (preset) { selectGreen(preset); applyUrlState(); loadRealGreen(false); }
+            else if (want === 'preset') { loadRealGreen(false); applyUrlState(); }
+            else loadRealGreen(true).then(() => applyUrlState());
+        })();
     </script>
 </body>
 </html>

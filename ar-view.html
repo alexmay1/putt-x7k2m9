@@ -1,0 +1,772 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<title>PuttGuide - AR camera view</title>
+<link rel="icon" href="data:,">
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
+  html, body { height: 100%; background: #000; color: #fff; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; overflow: hidden; overscroll-behavior: none; }
+  #stage { position: fixed; inset: 0; touch-action: none; }
+  #video { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; background: #111; }
+  #overlay { position: absolute; inset: 0; width: 100%; height: 100%; }
+  .glass { background: rgba(0,0,0,0.72); border: 1px solid rgba(255,255,255,0.18); border-radius: 14px; }
+  #top { position: fixed; left: 8px; right: 8px; top: calc(env(safe-area-inset-top) + 8px); display: flex; gap: 8px; align-items: flex-start; pointer-events: none; }
+  #status { flex: 1; padding: 8px 12px; font-size: 15px; font-weight: 700; line-height: 1.3; }
+  #status .sub { font-size: 12px; font-weight: 600; color: #d4d4d4; }
+  #status .warn { color: #ffd60a; }
+  #status .bad { color: #ff6b6b; }
+  #info-btn { pointer-events: auto; width: 48px; height: 48px; border-radius: 24px; font-size: 22px; color: #fff; background: rgba(0,0,0,0.72); border: 1px solid rgba(255,255,255,0.25); }
+  #prompt { position: fixed; left: 50%; top: 38%; transform: translate(-50%, -50%); padding: 14px 20px; font-size: 22px; font-weight: 800; text-align: center; pointer-events: none; white-space: nowrap; }
+  #prompt small { display: block; font-size: 13px; font-weight: 600; color: #ddd; margin-top: 4px; white-space: normal; }
+  #bottom { position: fixed; left: 8px; right: 8px; bottom: calc(env(safe-area-inset-bottom) + 8px); padding: 10px; display: flex; flex-direction: column; gap: 8px; }
+  #readout { font-size: 16px; font-weight: 800; text-align: center; min-height: 20px; }
+  #readout .aim { color: #64c8ff; }
+  .seg { display: flex; gap: 6px; }
+  .seg button, .row button { flex: 1; height: 56px; border-radius: 12px; border: 2px solid rgba(255,255,255,0.25); background: rgba(255,255,255,0.08); color: #fff; font-size: 18px; font-weight: 800; }
+  .seg button.on { background: #fff; color: #000; border-color: #fff; }
+  .row { display: flex; gap: 6px; align-items: stretch; }
+  .row .stimp { flex: 1.6; display: flex; align-items: center; justify-content: space-between; border-radius: 12px; border: 2px solid rgba(255,255,255,0.25); background: rgba(255,255,255,0.08); }
+  .row .stimp button { flex: 0 0 52px; height: 52px; border: none; background: none; font-size: 26px; }
+  .row .stimp span { font-size: 15px; font-weight: 800; text-align: center; }
+  #lost { position: fixed; left: 8px; right: 8px; bottom: calc(env(safe-area-inset-bottom) + 200px); padding: 12px; text-align: center; font-weight: 800; font-size: 16px; color: #000; background: #ffd60a; border-radius: 12px; display: none; }
+  .sheet { position: fixed; inset: 0; background: rgba(8,8,8,0.97); overflow-y: auto; -webkit-overflow-scrolling: touch; padding: calc(env(safe-area-inset-top) + 14px) 16px calc(env(safe-area-inset-bottom) + 24px); z-index: 10; }
+  .sheet h1 { font-size: 22px; color: #22c55e; margin-bottom: 4px; }
+  .sheet h2 { font-size: 13px; text-transform: uppercase; letter-spacing: 0.06em; color: #9ca3af; margin: 18px 0 8px; }
+  .sheet p, .sheet li { font-size: 15px; line-height: 1.45; color: #e5e5e5; }
+  .sheet ul { padding-left: 20px; }
+  .sheet .note { font-size: 13px; color: #a3a3a3; margin-top: 6px; }
+  .opt { display: block; width: 100%; text-align: left; padding: 14px; margin: 6px 0; border-radius: 12px; border: 2px solid rgba(255,255,255,0.15); background: rgba(255,255,255,0.05); color: #fff; font-size: 16px; font-weight: 700; }
+  .opt small { display: block; font-weight: 500; font-size: 13px; color: #bbb; margin-top: 2px; }
+  .opt.on { border-color: #22c55e; background: rgba(34,197,94,0.15); }
+  .opt:disabled { opacity: 0.4; }
+  .pair { display: flex; gap: 6px; }
+  .pair .opt { flex: 1; text-align: center; padding: 12px 6px; }
+  .numrow { display: flex; align-items: center; gap: 10px; margin: 6px 0; font-size: 16px; font-weight: 700; }
+  .numrow input { width: 90px; height: 48px; font-size: 20px; font-weight: 800; text-align: center; border-radius: 10px; border: 2px solid rgba(255,255,255,0.25); background: #111; color: #fff; }
+  .numrow input[type=range] { flex: 1; width: auto; height: 40px; }
+  .big { display: block; width: 100%; height: 64px; margin-top: 18px; border-radius: 16px; border: none; background: #22c55e; color: #000; font-size: 21px; font-weight: 900; }
+  .link { color: #64c8ff; font-weight: 700; text-decoration: none; }
+  #toast { pointer-events: none; position: fixed; left: 50%; top: 22%; transform: translateX(-50%); max-width: 90%; padding: 12px 16px; font-size: 15px; font-weight: 700; text-align: center; display: none; z-index: 20; }
+  #portrait { position: fixed; inset: 0; display: none; align-items: center; justify-content: center; background: rgba(0,0,0,0.92); font-size: 22px; font-weight: 800; z-index: 30; text-align: center; padding: 30px; }
+  #debug { position: fixed; right: 8px; top: 120px; font: 11px monospace; color: #0f0; background: rgba(0,0,0,0.6); padding: 4px; display: none; white-space: pre; pointer-events: none; }
+</style>
+</head>
+<body>
+<div id="stage">
+  <video id="video" playsinline muted autoplay></video>
+  <canvas id="overlay"></canvas>
+</div>
+<div id="top">
+  <div id="status" class="glass">PuttGuide AR</div>
+  <button id="info-btn" aria-label="What is estimated">ⓘ</button>
+</div>
+<div id="prompt" class="glass" style="display:none"></div>
+<div id="lost"></div>
+<div id="bottom" class="glass" style="display:none">
+  <div id="readout"></div>
+  <div class="seg" id="power-seg">
+    <button data-p="25">Soft</button><button data-p="50">Medium</button><button data-p="80">Hard</button>
+  </div>
+  <div class="row">
+    <button id="retap-btn">↺ Re-tap</button>
+    <div class="stimp"><button id="stimp-minus" aria-label="Slower green">−</button><span id="stimp-val">Stimp 10</span><button id="stimp-plus" aria-label="Faster green">+</button></div>
+    <button id="setup-btn" style="flex:0 0 64px" aria-label="Setup">⚙︎</button>
+  </div>
+</div>
+<div id="toast" class="glass"></div>
+<div id="portrait">Turn the phone upright (portrait) — the AR view only works in portrait.</div>
+<div id="debug"></div>
+<input type="file" id="scan-file" style="display:none">
+
+<!-- SETUP -->
+<div id="setup" class="sheet">
+  <h1>📷 PuttGuide AR view <span style="font-size:13px;color:#ffd60a">beta</span></h1>
+  <p>Draws the make line on the camera view. You tap the ball and the hole; the phone's tilt sensor and those two taps place the line on the ground.</p>
+
+  <h2>Where are you?</h2>
+  <div class="pair" id="mode-pick">
+    <button class="opt" data-mode="green">⛳ On the green</button>
+    <button class="opt" data-mode="indoor">🏠 Indoor test</button>
+  </div>
+  <p class="note" id="mode-note"></p>
+
+  <h2>Slope comes from</h2>
+  <div id="green-pick"></div>
+  <div id="manual-box" style="display:none">
+    <div class="pair" id="man-dir"><button class="opt" data-v="left">Breaks left</button><button class="opt" data-v="right">Breaks right</button></div>
+    <div class="pair" id="man-slope"><button class="opt" data-v="1">1% gentle</button><button class="opt" data-v="2">2%</button><button class="opt" data-v="3">3% strong</button></div>
+    <div class="pair" id="man-hill"><button class="opt" data-v="up">Uphill</button><button class="opt" data-v="flat">Flat</button><button class="opt" data-v="down">Downhill</button></div>
+  </div>
+
+  <div id="place-box">
+    <h2>Ball and hole on the scan</h2>
+    <div id="place-pick"></div>
+    <div class="numrow" id="scanstart-row"><span>Ball to hole</span><input id="scanstart-dist" type="number" inputmode="decimal" step="0.1" min="0.5" max="15"><span>m</span></div>
+  </div>
+
+  <div id="coin-box">
+    <h2>Your two markers</h2>
+    <p>Put two coins (or a ball and a cup/coaster) on the floor. Measure or pace the gap.</p>
+    <div class="numrow"><span>Gap</span><input id="coin-dist" type="number" inputmode="decimal" step="0.1" min="0.5" max="8"><span>m</span></div>
+  </div>
+
+  <h2>Phone height</h2>
+  <div class="pair" id="height-pick">
+    <button class="opt" data-h="1.5">🧍 Standing<small>~1.5 m</small></button>
+    <button class="opt" data-h="0.9">🧎 Crouching<small>~0.9 m</small></button>
+  </div>
+  <p class="note" id="height-note"></p>
+
+  <h2>Display</h2>
+  <div class="pair" id="arrows-pick"><button class="opt" data-v="1">Downhill arrows on</button><button class="opt" data-v="0">Arrows off</button></div>
+  <div class="numrow"><span style="font-size:14px">Camera field of view</span><input id="fov" type="range" min="55" max="85" step="1"><span id="fov-val" style="width:44px">70°</span></div>
+  <p class="note">Leave at 70° unless the line looks stretched. It's an assumption about the iPhone main camera.</p>
+
+  <button class="big" id="start-btn">Start camera</button>
+  <p class="note" style="text-align:center;margin-top:10px">Safari will ask for Camera and Motion &amp; Orientation access — allow both.</p>
+  <p style="margin-top:16px;text-align:center"><a class="link" id="sim-link" href="green-sim.html">← Back to the simulator</a> · <a class="link" href="index.html">Home</a> · <a class="link" href="ar-view.html?demo=1">Demo (no camera)</a></p>
+</div>
+
+<!-- INFO -->
+<div id="info" class="sheet" style="display:none">
+  <h1>What's measured, what's estimated</h1>
+  <ul>
+    <li><b>Slope</b>: from your LiDAR scan (or the practice / manual slope you picked). The line is the same physics as the simulator: rolling ball, slope pull, Stimp friction.</li>
+    <li><b>Where the green sits in the camera</b> is <b>estimated</b> from the phone's tilt sensor, your two taps, and the ball-to-hole distance. iPhone Safari has no web AR (no WebXR), so this page can't use LiDAR depth or ARKit plane tracking.</li>
+    <li><b>Phone height</b> is worked out from the ball-to-hole distance. If it reads far from where you're holding the phone, the distance or the taps are off.</li>
+    <li><b>Ball and hole</b> are followed by image matching plus the gyro. Big steps, shadows or a person walking through can lose them — tap <b>Re-tap</b>.</li>
+    <li>The line is pinned exactly at your two taps. Expect it to be a few cm off near the ball and hole and up to 10–20 cm off at the widest part of a big breaking putt.</li>
+    <li>The camera field of view is assumed (70°). Wrong values bend the line slightly.</li>
+  </ul>
+  <h2>Tips</h2>
+  <ul>
+    <li>Stand behind the ball so both ball and hole are on screen, then tap the ball first, then the hole.</li>
+    <li>After the line shows, drag a marker to fine-tune it (moves at half speed so your finger doesn't hide it).</li>
+    <li>Keep the phone upright-ish (screen facing you, camera pointing at the ground ahead).</li>
+  </ul>
+  <button class="big" id="info-close">Got it</button>
+</div>
+
+<script src="putt-core.js"></script>
+<script src="ar-core.js"></script>
+<script>
+'use strict';
+const A = window.ARCore;
+const $ = (id) => document.getElementById(id);
+const LAST_SCAN_KEY = 'puttguide.lastScan', SIM_STATE_KEY = 'puttguide.simState', AR_KEY = 'puttguide.ar.v1';
+const REAL_GREEN_ID = 'real-green-1', REAL_GREEN_URL = 'samples/real-green-1.json';
+const POWERS = [{ p: 25, name: 'Soft', color: '#ff7a45' }, { p: 50, name: 'Medium', color: '#ffd60a' }, { p: 80, name: 'Hard', color: '#4ade80' }];
+const TRACK_W = 360;
+const qs = new URLSearchParams(location.search);
+const DEMO = qs.has('demo');
+
+// ---------------- settings ----------------
+const S = Object.assign({
+  mode: 'green', greenSrc: REAL_GREEN_ID, placement: 'sim', scanStartDist: 3.0, coinDist: 2.0,
+  manual: { dir: 'right', slope: 2, hill: 'flat' }, phoneH: 1.5, fov: 70, power: 50, stimp: 10, arrows: true
+}, readJSON(AR_KEY) || {});
+if (qs.get('mode') === 'indoor') { S.mode = 'indoor'; if (!qs.get('green')) S.greenSrc = 'slope-lr'; }
+if (qs.get('mode') === 'green') S.mode = 'green';
+let urlPutt = null;
+if (qs.get('green')) {
+  S.greenSrc = qs.get('green');
+  if (!qs.get('mode')) S.mode = 'green';
+  const n = (k) => parseFloat(qs.get(k));
+  if (isFinite(n('bx')) && isFinite(n('bz')) && isFinite(n('hx')) && isFinite(n('hz'))) {
+    urlPutt = { green: S.greenSrc, ball: { x: n('bx'), z: n('bz') }, hole: { x: n('hx'), z: n('hz') } };
+    S.placement = 'sim';
+  }
+  if (isFinite(n('p'))) S.power = Math.max(0, Math.min(100, n('p')));
+  if (isFinite(n('s'))) S.stimp = Math.max(6, Math.min(14, n('s')));
+}
+if (DEMO && !qs.get('mode')) { S.mode = 'indoor'; }
+function readJSON(k) { try { const v = localStorage.getItem(k); return v ? JSON.parse(v) : null; } catch (_) { return null; } }
+function saveSettings() { try { localStorage.setItem(AR_KEY, JSON.stringify(S)); } catch (_) {} }
+
+// ---------------- greens ----------------
+let realGreen = null, lastScanGreen = null, lastScanMeta = null;
+function loadLastScan() {
+  const rec = readJSON(LAST_SCAN_KEY);
+  if (!rec || !rec.json) return null;
+  try { lastScanGreen = loadHeightmapObject(rec.json, 'last-scan'); lastScanGreen.name = rec.name || lastScanGreen.name; lastScanMeta = rec; }
+  catch (_) { lastScanGreen = null; }
+  return lastScanGreen;
+}
+function manualGreen() {
+  const m = S.manual, s = m.slope / 100, u = m.hill === 'up' ? 0.015 : (m.hill === 'down' ? -0.015 : 0);
+  // putt runs up the screen (ball z>0, hole z<0). Breaks right = falls toward +x.
+  const sign = m.dir === 'right' ? -1 : 1;
+  return { id: 'manual-' + m.dir + m.slope + m.hill, name: `Manual: ${m.slope}% breaking ${m.dir}${m.hill !== 'flat' ? ', ' + m.hill + 'hill' : ''}`, kind: 'fn',
+           heightField: (x, z) => sign * s * x - u * z };
+}
+function currentGreen() {
+  if (S.greenSrc === REAL_GREEN_ID) return realGreen;
+  if (S.greenSrc === 'last-scan') return lastScanGreen;
+  if (S.greenSrc === 'manual') return manualGreen();
+  return PRESETS.find(p => p.id === S.greenSrc) || PRESETS.find(p => p.id === 'slope-lr');
+}
+function defaultMarkers(g) {
+  if (g && g.id === REAL_GREEN_ID) return { ball: { x: 0.0, z: 0.4 }, hole: { x: 0.4, z: -2.0 } };
+  return null;
+}
+// Ball/hole on the map, and whether the distance is known (map) or must come from phone height (tap).
+function mapPutt() {
+  const g = currentGreen();
+  if (!g) return { err: 'Loading the green…' };
+  const isGrid = g.kind === 'grid';
+  if (S.mode === 'indoor') {
+    const D = S.coinDist;
+    if (isGrid) {
+      const sp = simPuttFor(g) || defaultMarkers(g);
+      let b = sp ? sp.ball : { x: (g.bounds.x0 + g.bounds.x1) / 2, z: (g.bounds.z0 + g.bounds.z1) / 2 + D / 2 };
+      let dir = sp ? { x: sp.hole.x - sp.ball.x, z: sp.hole.z - sp.ball.z } : { x: 0, z: -1 };
+      const L = Math.hypot(dir.x, dir.z) || 1;
+      return { g, ball: b, hole: { x: b.x + dir.x / L * D, z: b.z + dir.z / L * D }, known: true, note: 'Your coins stand in for that putt on ' + g.name };
+    }
+    return { g, ball: { x: 0, z: D / 2 }, hole: { x: 0, z: -D / 2 }, known: true };
+  }
+  if (isGrid) {
+    let r;
+    if (S.placement === 'scanstart') r = { g, ball: { x: 0, z: 0 }, hole: { x: 0, z: -S.scanStartDist }, known: true };
+    else {
+      const sp = simPuttFor(g) || defaultMarkers(g);
+      if (!sp) return { g, err: 'Place the ball and hole on this scan in the simulator first, or pick "Scan started at the ball".' };
+      r = { g, ball: sp.ball, hole: sp.hole, known: true };
+    }
+    selectedPreset = g;
+    if (!isOnGreen(r.ball.x, r.ball.z) || !isOnGreen(r.hole.x, r.hole.z)) return { g, err: 'The ' + (!isOnGreen(r.ball.x, r.ball.z) ? 'ball' : 'hole') + ' spot is outside the scanned area. Move it in the simulator.' };
+    return r;
+  }
+  // Practice/manual slope on a real green: distance from phone height at tap time.
+  return { g, ball: null, hole: null, known: false };
+}
+function simPuttFor(g) {
+  if (urlPutt && urlPutt.green === S.greenSrc) return urlPutt;
+  const st = readJSON(SIM_STATE_KEY);
+  if (!st || !st.ball || !st.hole) return null;
+  if (st.greenId !== g.id) return null;
+  if (g.id === 'last-scan' && lastScanMeta && st.scanStamp !== lastScanMeta.stamp) return null;
+  return st;
+}
+
+// ---------------- runtime state ----------------
+const video = $('video'), canvas = $('overlay'), ctx = canvas.getContext('2d');
+const trackCanvas = document.createElement('canvas'), tctx = trackCanvas.getContext('2d', { willReadFrequently: true });
+let K = null, TW = 0, TH = 0, gray = null;
+let step = 'setup';        // setup | ball | hole | live
+let trB = null, trH = null;
+let tapD = null;           // ball->hole distance fixed at tap time (tap geometry)
+let putt = null;           // { g, ball, hole } in map coords used for the solve
+let solution = null, solveKey = '', solving = false;
+let orient = null, lastR = null, upSmooth = null, hasSensor = false;
+let pose = null, lastVideoTime = -1, frameCount = 0, trackMsAvg = 0, fpsAvg = 0, lastFrameTs = 0;
+let drag = null;
+let demo = null;
+
+const HAS_RVFC = 'requestVideoFrameCallback' in HTMLVideoElement.prototype;
+let videoFrameSeq = 0;
+if (HAS_RVFC) { const onVF = () => { videoFrameSeq++; video.requestVideoFrameCallback(onVF); }; video.requestVideoFrameCallback(onVF); }
+
+// ---------------- orientation ----------------
+function onOrient(e) {
+  if (e.beta === null || e.beta === undefined) return;
+  orient = { a: e.alpha || 0, b: e.beta, g: e.gamma || 0 };
+  hasSensor = true;
+}
+window.addEventListener('deviceorientation', onOrient);
+function currentR() {
+  if (demo) return demo.R;
+  if (orient) return A.rotationFromEuler(orient.a, orient.b, orient.g);
+  return A.rotationFromEuler(0, 50, 0); // no sensor: assume 40 deg below horizon
+}
+function screenAngle() {
+  if (screen.orientation && typeof screen.orientation.angle === 'number') return screen.orientation.angle;
+  return typeof window.orientation === 'number' ? window.orientation : 0;
+}
+
+// ---------------- camera ----------------
+async function startCamera() {
+  saveSettings();
+  if (typeof DeviceOrientationEvent !== 'undefined' && typeof DeviceOrientationEvent.requestPermission === 'function') {
+    try { await DeviceOrientationEvent.requestPermission(); } catch (_) {}
+  }
+  if (DEMO) { if (!demo) startDemo(); }
+  else {
+    if (!video.srcObject) {
+      try {
+        let stream;
+        try {
+          stream = await navigator.mediaDevices.getUserMedia({ audio: false, video: { facingMode: { ideal: 'environment' }, width: { ideal: 1280 }, height: { ideal: 720 } } });
+        } catch (e) { stream = await navigator.mediaDevices.getUserMedia({ audio: false, video: { facingMode: 'environment' } }); }
+        video.srcObject = stream;
+        await video.play();
+      } catch (err) {
+        alert('Camera did not start. On iPhone use Safari and allow camera access (Settings › Safari › Camera).\n\n' + (err && err.message || err));
+        return;
+      }
+    }
+  }
+  $('setup').style.display = 'none';
+  $('bottom').style.display = 'flex';
+  if (step === 'setup' || !trB || !trH) beginTaps(); else ensureSolve();
+  updateUI();
+}
+function setupTrackSize() {
+  const vw = video.videoWidth, vh = video.videoHeight;
+  if (!vw || !vh) return false;
+  TW = Math.min(TRACK_W, vw); TH = Math.round(vh * TW / vw);
+  if (trackCanvas.width !== TW || trackCanvas.height !== TH) { trackCanvas.width = TW; trackCanvas.height = TH; gray = new Float32Array(TW * TH); }
+  K = A.intrinsics(TW, TH, S.fov);
+  if (!DEMO && vw > vh && (screenAngle() === 0 || screenAngle() === 180) && !setupTrackSize.warned && /iPhone|iPad/.test(navigator.userAgent)) {
+    setupTrackSize.warned = true;
+    toast('The camera feed came in sideways (' + vw + 'x' + vh + '), so the line will be wrong. Please tell me about this.', 6000);
+  }
+  return true;
+}
+function grabGray() {
+  tctx.drawImage(video, 0, 0, TW, TH);
+  const d = tctx.getImageData(0, 0, TW, TH).data;
+  gray = A.rgbaToGray(d, TW * TH, gray);
+}
+// track coords <-> screen (video is object-fit: cover)
+function layout() {
+  const sw = innerWidth, sh = innerHeight, vw = video.videoWidth || 1, vh = video.videoHeight || 1;
+  const sc = Math.max(sw / vw, sh / vh);
+  return { k: sc * vw / TW, ox: (sw - vw * sc) / 2, oy: (sh - vh * sc) / 2 };
+}
+function t2s(p) { const L = layout(); return { x: p.x * L.k + L.ox, y: p.y * L.k + L.oy }; }
+function s2t(p) { const L = layout(); return { x: (p.x - L.ox) / L.k, y: (p.y - L.oy) / L.k }; }
+
+// ---------------- demo (no camera): synthetic green rendered to a canvas stream ----------------
+function startDemo() {
+  const c = document.createElement('canvas'); c.width = 270; c.height = 480;
+  const cx2 = c.getContext('2d'); const img = cx2.createImageData(c.width, c.height);
+  const Kd = A.intrinsics(c.width, c.height, S.fov);
+  const mp = mapPutt();
+  const mb = mp.ball || { x: 0, z: 1 }, mh = mp.hole || { x: 0, z: -1 };
+  // map (x,-z) == world (x, y)
+  const scene = { ball: { x: mb.x, y: -mb.z }, hole: { x: mh.x, y: -mh.z } };
+  const dir = Math.atan2(scene.hole.x - scene.ball.x, scene.hole.y - scene.ball.y); // heading from north
+  const buf = new Float32Array(c.width * c.height);
+  demo = { R: A.rotationFromEuler(0, 50, 0), C: A.V(0, 0, 1.5), scene, Kd, t0: performance.now() };
+  function poseAt(t) {
+    const yaw = -dir / A.DEG + 6 * Math.sin(t / 2.1), beta = 52 + 4 * Math.sin(t / 1.7), gamma = 2 * Math.sin(t / 1.3);
+    const back = 0.9 + 0.15 * Math.sin(t / 3);
+    const C = A.V(scene.ball.x - Math.sin(dir) * back + 0.1 * Math.sin(t / 2.5), scene.ball.y - Math.cos(dir) * back, 1.5);
+    return { R: A.rotationFromEuler(yaw, beta, gamma), C };
+  }
+  demo.poseAt = poseAt;
+  function draw() {
+    const t = (performance.now() - demo.t0) / 1000 * (demo.speed || 1);
+    const p = poseAt(t); demo.R = p.R; demo.C = p.C; demo.frame = (demo.frame || 0) + 1;
+    A.renderGround(Kd, p.R, p.C, scene, buf);
+    const d = img.data;
+    for (let i = 0, j = 0; i < buf.length; i++, j += 4) { const v = buf[i]; d[j] = v * 0.55; d[j + 1] = v * 0.95 + 10; d[j + 2] = v * 0.45; d[j + 3] = 255; }
+    cx2.putImageData(img, 0, 0);
+    demo.timer = setTimeout(draw, 33);
+  }
+  draw();
+  video.srcObject = c.captureStream(30);
+  video.play().catch(() => {});
+  hasSensor = true;
+  toast('Demo: a synthetic green, swaying like a handheld phone. Tap the white ball, then the dark hole.', 4500);
+}
+function demoTruthPixels() { // for tests
+  if (!demo) return null;
+  const Kt = A.intrinsics(TW, TH, S.fov);
+  return { ball: A.worldToPixel(Kt, demo.R, demo.C, A.V(demo.scene.ball.x, demo.scene.ball.y, 0)), hole: A.worldToPixel(Kt, demo.R, demo.C, A.V(demo.scene.hole.x, demo.scene.hole.y, 0)) };
+}
+
+// ---------------- taps ----------------
+function beginTaps() {
+  trB = trH = null; tapD = null; pose = null; solution = null; solveKey = '';
+  step = 'ball';
+  const mp = mapPutt();
+  if (mp.err) toast(mp.err, 5000);
+  updateUI();
+}
+function placeAt(screenPt) {
+  if (!setupTrackSize()) return;
+  grabGray();
+  const t = s2t(screenPt);
+  if (t.x < 0 || t.y < 0 || t.x >= TW || t.y >= TH) return;
+  if (step === 'ball') { trB = A.createTracker(gray, TW, TH, t.x, t.y); step = 'hole'; }
+  else if (step === 'hole') {
+    trH = A.createTracker(gray, TW, TH, t.x, t.y);
+    step = 'live';
+    const mp = mapPutt();
+    if (!mp.known) {
+      const up = A.upInCamera(currentR());
+      tapD = A.groundDistance(K, up, trB, trH, S.phoneH);
+      if (!tapD || tapD < 0.3) { toast('Could not read that distance. Tap the ball and hole on the ground, below the horizon.', 4000); beginTaps(); return; }
+    }
+    if (trB.lowTexture || trH.lowTexture) toast('That spot has little texture to lock on to. Tracking may slip.', 3000);
+    ensureSolve();
+  }
+  lastR = currentR();
+  updateUI();
+}
+const stage = $('stage');
+stage.addEventListener('pointerdown', (e) => {
+  e.preventDefault();
+  const p = { x: e.clientX, y: e.clientY };
+  if (step === 'ball' || step === 'hole') { placeAt(p); return; }
+  if (step === 'live') {
+    for (const tr of [trB, trH]) {
+      if (!tr) continue;
+      const s = t2s(tr);
+      if (Math.hypot(s.x - p.x, s.y - p.y) < 48) { drag = { tr, start: p, t0: { x: tr.x, y: tr.y } }; tr.dragging = true; return; }
+    }
+  }
+});
+stage.addEventListener('pointermove', (e) => {
+  if (!drag) return;
+  e.preventDefault();
+  const L = layout();
+  drag.tr.x = drag.t0.x + (e.clientX - drag.start.x) * 0.5 / L.k;
+  drag.tr.y = drag.t0.y + (e.clientY - drag.start.y) * 0.5 / L.k;
+});
+function endDrag() {
+  if (!drag) return;
+  const tr = drag.tr; drag = null; tr.dragging = false;
+  grabGray();
+  const n = A.createTracker(gray, TW, TH, tr.x, tr.y);
+  Object.assign(tr, n);
+  if (!putt || putt.tap) { if (!mapPutt().known) { tapD = A.groundDistance(K, A.upInCamera(currentR()), trB, trH, S.phoneH) || tapD; ensureSolve(); } }
+}
+stage.addEventListener('pointerup', endDrag);
+stage.addEventListener('pointercancel', endDrag);
+
+// ---------------- solve (only when inputs change) ----------------
+function puttForSolve() {
+  const mp = mapPutt();
+  if (mp.err || !mp.g) return null;
+  if (mp.known) return { g: mp.g, ball: mp.ball, hole: mp.hole };
+  if (!tapD) return null;
+  return { g: mp.g, ball: { x: 0, z: tapD / 2 }, hole: { x: 0, z: -tapD / 2 }, tap: true };
+}
+function ensureSolve() {
+  const p = puttForSolve();
+  putt = p;
+  if (!p) { solution = null; return; }
+  const key = [p.g.id, p.ball.x, p.ball.z, p.hole.x, p.hole.z, S.power, S.stimp].map(v => typeof v === 'number' ? v.toFixed(3) : v).join('|');
+  if (key === solveKey) return;
+  solveKey = key; solving = true; updateUI();
+  setTimeout(() => {
+    selectedPreset = p.g; stimp = S.stimp;
+    const t0 = performance.now();
+    let sol = null;
+    try { sol = solveAimAngle(p.ball, p.hole, S.power); } catch (err) { console.error(err); }
+    if (key !== solveKey) return; // superseded
+    solution = sol; solving = false;
+    solution && (solution.ms = performance.now() - t0);
+    updateUI();
+  }, 20);
+}
+function heightAt(x, z) { if (!putt) return 0; selectedPreset = putt.g; return getHeight(x, z); }
+
+// ---------------- frame loop ----------------
+function frame(ts) {
+  requestAnimationFrame(frame);
+  const portrait = screenAngle() === 0 || screenAngle() === 180;
+  $('portrait').style.display = portrait || step === 'setup' ? 'none' : 'flex';
+  if (!video.videoWidth || step === 'setup') { clearOverlay(); return; }
+  if (!setupTrackSize()) return;
+  if (lastFrameTs) fpsAvg = fpsAvg * 0.9 + 0.1 * (1000 / Math.max(1, ts - lastFrameTs));
+  lastFrameTs = ts;
+  const R = currentR();
+  // Track once per new camera frame (requestVideoFrameCallback on Safari 15.4+, else every animation frame).
+  const newVideoFrame = DEMO ? (demo && demo.frame !== demo.lastTracked) : (HAS_RVFC ? videoFrameSeq !== lastVideoTime : true);
+  if (newVideoFrame && (trB || trH) && portrait) {
+    lastVideoTime = videoFrameSeq; if (demo) demo.lastTracked = demo.frame;
+    const t0 = performance.now();
+    grabGray();
+    for (const tr of [trB, trH]) {
+      if (!tr || tr.dragging) continue;
+      const pr = lastR ? A.predictPixel(K, tr.x, tr.y, lastR, R) : null;
+      A.trackStep(tr, gray, TW, TH, pr ? pr.x : tr.x, pr ? pr.y : tr.y);
+    }
+    lastR = R;
+    trackMsAvg = trackMsAvg * 0.9 + 0.1 * (performance.now() - t0);
+    frameCount++;
+  }
+  // smoothed up vector for the ground plane
+  const up = A.upInCamera(R);
+  upSmooth = upSmooth ? A.unit(A.add(A.mul(upSmooth, 0.6), A.mul(up, 0.4))) : up;
+  pose = null;
+  if (step === 'live' && trB && trH && putt) {
+    pose = A.poseFromTaps(K, upSmooth, trB, trH, putt.ball, putt.hole, heightAt, null);
+  }
+  draw();
+  if (frameCount % 10 === 0) updateStatus();
+  if (qs.has('debug')) { $('debug').style.display = 'block'; $('debug').textContent = `fps ${fpsAvg.toFixed(0)}\ntrack ${trackMsAvg.toFixed(1)}ms\n${TW}x${TH} f=${K.f.toFixed(0)}\nB ${trB ? trB.score.toFixed(2) : '-'} H ${trH ? trH.score.toFixed(2) : '-'}\nH=${pose ? pose.H.toFixed(2) : '-'}`; }
+}
+function clearOverlay() {
+  const dpr = Math.min(3, devicePixelRatio || 1), w = innerWidth, h = innerHeight;
+  if (canvas.width !== Math.round(w * dpr) || canvas.height !== Math.round(h * dpr)) { canvas.width = Math.round(w * dpr); canvas.height = Math.round(h * dpr); }
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, w, h);
+}
+
+// ---------------- drawing ----------------
+function projS(m, hOverride) { const p = pose.project(m.x, m.z, hOverride); return p ? t2s(p) : null; }
+function strokePath(pts, color, width, dash) {
+  ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+  for (const pass of [0, 1]) {
+    ctx.setLineDash(dash || []);
+    ctx.strokeStyle = pass ? color : 'rgba(0,0,0,0.85)';
+    ctx.lineWidth = pass ? width : width + 4;
+    ctx.beginPath();
+    let pen = false;
+    for (const m of pts) {
+      const s = projS(m);
+      if (!s) { pen = false; continue; }
+      if (!pen) { ctx.moveTo(s.x, s.y); pen = true; } else ctx.lineTo(s.x, s.y);
+    }
+    ctx.stroke();
+  }
+  ctx.setLineDash([]);
+}
+function groundCircle(c, r, n) { const pts = []; for (let i = 0; i <= (n || 28); i++) { const a = i / (n || 28) * Math.PI * 2; pts.push({ x: c.x + r * Math.cos(a), z: c.z + r * Math.sin(a) }); } return pts; }
+function fillGround(pts, fill) {
+  ctx.beginPath(); let ok = false;
+  for (const m of pts) { const s = projS(m); if (!s) return; if (!ok) { ctx.moveTo(s.x, s.y); ok = true; } else ctx.lineTo(s.x, s.y); }
+  ctx.fillStyle = fill; ctx.fill();
+}
+function label(text, s, color, size) {
+  ctx.font = `900 ${size || 16}px -apple-system, sans-serif`; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.lineWidth = 5; ctx.strokeStyle = 'rgba(0,0,0,0.9)'; ctx.strokeText(text, s.x, s.y);
+  ctx.fillStyle = color; ctx.fillText(text, s.x, s.y);
+}
+function drawMarker(tr, color, name) {
+  const s = t2s(tr);
+  const coasting = !tr.ok;
+  ctx.setLineDash(coasting ? [6, 5] : []);
+  ctx.lineWidth = 5; ctx.strokeStyle = 'rgba(0,0,0,0.85)';
+  ctx.beginPath(); ctx.arc(s.x, s.y, 20, 0, Math.PI * 2); ctx.stroke();
+  ctx.lineWidth = 3; ctx.strokeStyle = coasting ? '#ffd60a' : color;
+  ctx.beginPath(); ctx.arc(s.x, s.y, 20, 0, Math.PI * 2); ctx.stroke();
+  ctx.setLineDash([]);
+  ctx.beginPath(); ctx.moveTo(s.x - 6, s.y); ctx.lineTo(s.x + 6, s.y); ctx.moveTo(s.x, s.y - 6); ctx.lineTo(s.x, s.y + 6); ctx.stroke();
+  label(name, { x: s.x, y: s.y + 34 }, coasting ? '#ffd60a' : color, 13);
+}
+function drawArrows() {
+  const b = putt.ball, h = putt.hole, g = putt.g;
+  const x0 = Math.min(b.x, h.x) - 1, x1 = Math.max(b.x, h.x) + 1, z0 = Math.min(b.z, h.z) - 1, z1 = Math.max(b.z, h.z) + 1;
+  selectedPreset = g;
+  ctx.lineCap = 'round';
+  for (let x = x0; x <= x1 + 1e-6; x += 0.5) for (let z = z0; z <= z1 + 1e-6; z += 0.5) {
+    if (!isOnGreen(x, z)) continue;
+    const gr = getGradient(x, z), sl = Math.hypot(gr.x, gr.z);
+    if (sl < 0.004) continue;
+    const L = 0.22, ux = -gr.x / sl, uz = -gr.z / sl;
+    const p0 = { x: x - ux * L / 2, z: z - uz * L / 2 }, p1 = { x: x + ux * L / 2, z: z + uz * L / 2 };
+    const s0 = projS(p0), s1 = projS(p1);
+    if (!s0 || !s1) continue;
+    const a = Math.min(0.9, 0.25 + sl / 0.04 * 0.6);
+    const ang = Math.atan2(s1.y - s0.y, s1.x - s0.x), hl = Math.min(10, Math.hypot(s1.x - s0.x, s1.y - s0.y) * 0.45);
+    for (const pass of [0, 1]) {
+      ctx.strokeStyle = pass ? `rgba(255,255,255,${a})` : `rgba(0,0,0,${a * 0.6})`; ctx.lineWidth = pass ? 2 : 4;
+      ctx.beginPath(); ctx.moveTo(s0.x, s0.y); ctx.lineTo(s1.x, s1.y);
+      ctx.lineTo(s1.x - hl * Math.cos(ang - 0.5), s1.y - hl * Math.sin(ang - 0.5));
+      ctx.moveTo(s1.x, s1.y); ctx.lineTo(s1.x - hl * Math.cos(ang + 0.5), s1.y - hl * Math.sin(ang + 0.5));
+      ctx.stroke();
+    }
+  }
+}
+function powerColor() { let best = POWERS[0]; for (const p of POWERS) if (Math.abs(p.p - S.power) < Math.abs(best.p - S.power)) best = p; return best.color; }
+function draw() {
+  clearOverlay();
+  if (pose && putt) {
+    if (S.arrows) drawArrows();
+    const sol = solution;
+    if (sol && !sol.missed && !solving) {
+      if (sol.overrunPath && sol.overrunPath.length > 1) strokePath(sol.overrunPath, 'rgba(255,255,255,0.45)', 3, [8, 7]);
+      // blue start line ball -> AIM HERE
+      strokePath([putt.ball, sol.aimPoint], 'rgba(100,200,255,0.95)', 3, [10, 8]);
+      fillGround(groundCircle(sol.aimPoint, 0.09), 'rgba(100,200,255,0.35)');
+      strokePath(groundCircle(sol.aimPoint, 0.09), '#64c8ff', 4);
+      const sa = projS(sol.aimPoint);
+      if (sa) label('AIM HERE', { x: sa.x, y: sa.y - 26 }, '#64c8ff', 17);
+      const path = sol.sinkPath.slice(); path[path.length - 1] = putt.hole;
+      strokePath(path, powerColor(), 6);
+    }
+    strokePath(groundCircle(putt.hole, 0.054), '#ffffff', 3);
+  }
+  if (trB) drawMarker(trB, '#ffffff', 'BALL');
+  if (trH) drawMarker(trH, '#ff5ad1', 'HOLE');
+}
+
+// ---------------- UI ----------------
+let toastTimer = null;
+function toast(msg, ms) { const t = $('toast'); t.textContent = msg; t.style.display = 'block'; clearTimeout(toastTimer); toastTimer = setTimeout(() => t.style.display = 'none', ms || 2500); }
+function updateStatus() {
+  const el = $('status');
+  if (step === 'setup') { el.innerHTML = 'PuttGuide AR'; return; }
+  const g = currentGreen();
+  const parts = [];
+  let sub = [];
+  if (putt) {
+    const D = Math.hypot(putt.hole.x - putt.ball.x, putt.hole.z - putt.ball.z);
+    selectedPreset = putt.g;
+    const dh = (getHeight(putt.hole.x, putt.hole.z) - getHeight(putt.ball.x, putt.ball.z)) * 100;
+    const hill = Math.abs(dh) < 1 ? 'level' : (dh > 0 ? `${dh.toFixed(0)} cm uphill` : `${(-dh).toFixed(0)} cm downhill`);
+    parts.push(`${D.toFixed(1)} m · ${hill}`);
+  } else parts.push(g ? g.name : 'Loading…');
+  const chip = (tr, n) => !tr ? '' : (tr.ok ? `${n} ✓` : (tr.offscreen ? `${n} off-screen` : `<span class="warn">${n} ? (gyro)</span>`));
+  if (trB || trH) sub.push([chip(trB, 'Ball'), chip(trH, 'Hole')].filter(Boolean).join(' · '));
+  if (pose) {
+    const H = pose.H, bad = H < 0.35 || H > 2.4;
+    sub.push(`<span class="${bad ? 'bad' : ''}">phone ≈ ${H.toFixed(2)} m up${bad ? ' — check taps/distance' : ''}</span>`);
+  }
+  if (!hasSensor) sub.push('<span class="bad">no tilt sensor — rough guess</span>');
+  if (g) sub.push(g.name);
+  el.innerHTML = parts.join('') + '<div class="sub">' + sub.join(' · ') + '</div>';
+  const lostEl = $('lost');
+  const lostLong = (trB && trB.lostFrames > 45 && !trB.offscreen) || (trH && trH.lostFrames > 45 && !trH.offscreen);
+  lostEl.style.display = step === 'live' && lostLong ? 'block' : 'none';
+  lostEl.textContent = 'Lost the ' + (trB && trB.lostFrames > 45 ? 'ball' : 'hole') + ' — hold still, or tap ↺ Re-tap';
+}
+function updateUI() {
+  const pr = $('prompt');
+  if (step === 'ball') { pr.style.display = 'block'; pr.innerHTML = 'Tap the BALL ⚪<small>' + (S.mode === 'indoor' ? 'your first coin' : 'stand behind it with the hole on screen too') + '</small>'; }
+  else if (step === 'hole') { pr.style.display = 'block'; pr.innerHTML = 'Now tap the HOLE 🚩<small>' + (S.mode === 'indoor' ? 'your second coin' : 'the middle of the cup') + '</small>'; }
+  else pr.style.display = 'none';
+  // While tapping, hide the button panel so the ball can be tapped anywhere on screen.
+  if (step !== 'setup') $('bottom').style.display = (step === 'ball' || step === 'hole') ? 'none' : 'flex';
+  document.querySelectorAll('#power-seg button').forEach(b => {
+    const p = +b.dataset.p; const best = POWERS.reduce((a, c) => Math.abs(c.p - S.power) < Math.abs(a.p - S.power) ? c : a);
+    b.classList.toggle('on', best.p === p); b.style.borderColor = best.p === p ? POWERS.find(q => q.p === p).color : '';
+    if (best.p === p) b.style.background = POWERS.find(q => q.p === p).color;
+    else b.style.background = '';
+  });
+  $('stimp-val').textContent = 'Stimp ' + (S.stimp % 1 ? S.stimp.toFixed(1) : S.stimp);
+  const ro = $('readout');
+  if (step !== 'live') ro.innerHTML = step === 'setup' ? '' : 'Tap ' + (step === 'ball' ? 'the ball' : 'the hole');
+  else if (!putt) ro.innerHTML = '<span class="warn">' + (mapPutt().err || 'Waiting…') + '</span>';
+  else if (solving) ro.innerHTML = 'Solving the putt…';
+  else if (!solution || solution.missed) ro.innerHTML = '<span style="color:#ffb450">No make line at this pace' + (solution && solution.runsOff ? ' (ball runs off the scan)' : '') + '</span>';
+  else {
+    const sd = A.sideOf(putt.ball, putt.hole, solution.aimPoint);
+    const pw = POWERS.reduce((a, c) => Math.abs(c.p - S.power) < Math.abs(a.p - S.power) ? c : a).name;
+    ro.innerHTML = sd.dist < 0.03 ? `<span class="aim">AIM HERE: straight at the hole</span> · ${pw}` :
+      `<span class="aim">AIM HERE: ${sd.dist < 0.995 ? Math.round(sd.dist * 100) + ' cm' : sd.dist.toFixed(2) + ' m'} ${sd.side} of the hole</span> · ${pw}`;
+  }
+  updateStatus();
+  renderSetup();
+}
+document.querySelectorAll('#power-seg button').forEach(b => b.addEventListener('click', () => { S.power = +b.dataset.p; saveSettings(); ensureSolve(); updateUI(); }));
+$('stimp-minus').addEventListener('click', () => { S.stimp = Math.max(6, S.stimp - 0.5); saveSettings(); ensureSolve(); updateUI(); });
+$('stimp-plus').addEventListener('click', () => { S.stimp = Math.min(14, S.stimp + 0.5); saveSettings(); ensureSolve(); updateUI(); });
+$('retap-btn').addEventListener('click', () => beginTaps());
+$('setup-btn').addEventListener('click', () => { $('setup').style.display = 'block'; $('start-btn').textContent = 'Back to camera'; });
+$('info-btn').addEventListener('click', () => { $('info').style.display = 'block'; });
+$('info-close').addEventListener('click', () => { $('info').style.display = 'none'; });
+$('start-btn').addEventListener('click', () => {
+  startCamera();
+});
+
+// ---------------- setup sheet ----------------
+function opt(parent, label, sub, on, click, disabled) {
+  const b = document.createElement('button'); b.className = 'opt' + (on ? ' on' : ''); b.innerHTML = label + (sub ? `<small>${sub}</small>` : '');
+  if (disabled) b.disabled = true; b.onclick = click; parent.appendChild(b); return b;
+}
+function renderSetup() {
+  document.querySelectorAll('#mode-pick .opt').forEach(b => b.classList.toggle('on', b.dataset.mode === S.mode));
+  $('mode-note').textContent = S.mode === 'indoor'
+    ? 'Try it at home: two coins on the floor stand in for the ball and the hole, with a real slope applied so you can see the line stay on the floor as you move.'
+    : 'Stand behind your ball with the hole in view.';
+  const gp = $('green-pick'); gp.innerHTML = '';
+  const set = (src) => () => { S.greenSrc = src; saveSettings(); if (step === 'live') beginTaps(); renderSetup(); };
+  if (S.mode === 'indoor') opt(gp, 'Practice slope', '2.5% sidehill, breaks right', S.greenSrc === 'slope-lr', set('slope-lr'));
+  opt(gp, '📡 My green (Oct 19 scan)', realGreen ? 'your practice-green scan' : 'loading…', S.greenSrc === REAL_GREEN_ID, set(REAL_GREEN_ID));
+  opt(gp, '📡 Last scan you loaded', lastScanGreen ? lastScanGreen.name + (lastScanMeta && lastScanMeta.stamp ? ' · ' + new Date(lastScanMeta.stamp).toLocaleDateString() : '') : 'none yet — load one below or in the simulator', S.greenSrc === 'last-scan', set('last-scan'), !lastScanGreen);
+  opt(gp, '📂 Load scan file', 'LiDARo PLY or a PuttGuide height map', false, () => $('scan-file').click());
+  opt(gp, '✋ No scan: manual break', 'pick the break yourself', S.greenSrc === 'manual', set('manual'));
+  $('manual-box').style.display = S.greenSrc === 'manual' ? 'block' : 'none';
+  for (const [id, key] of [['man-dir', 'dir'], ['man-slope', 'slope'], ['man-hill', 'hill']]) {
+    document.querySelectorAll('#' + id + ' .opt').forEach(b => {
+      b.classList.toggle('on', String(S.manual[key]) === b.dataset.v);
+      b.onclick = () => { S.manual[key] = key === 'slope' ? +b.dataset.v : b.dataset.v; saveSettings(); solveKey = ''; if (step === 'live') ensureSolve(); renderSetup(); };
+    });
+  }
+  const g = currentGreen();
+  const isGrid = g && g.kind === 'grid';
+  $('place-box').style.display = S.mode === 'green' && isGrid ? 'block' : 'none';
+  const pp = $('place-pick'); pp.innerHTML = '';
+  if (isGrid) {
+    const sp = simPuttFor(g) || defaultMarkers(g);
+    opt(pp, 'From the simulator', sp ? `${Math.hypot(sp.hole.x - sp.ball.x, sp.hole.z - sp.ball.z).toFixed(1)} m putt as placed there` : 'not placed yet — <a class="link" href="' + simHref() + '">open the simulator</a>', S.placement === 'sim', () => { S.placement = 'sim'; saveSettings(); renderSetup(); });
+    opt(pp, 'Scan started at the ball', 'you started LiDARo standing over the ball, facing the hole', S.placement === 'scanstart', () => { S.placement = 'scanstart'; saveSettings(); renderSetup(); });
+  }
+  $('scanstart-row').style.display = S.placement === 'scanstart' ? 'flex' : 'none';
+  $('coin-box').style.display = S.mode === 'indoor' ? 'block' : 'none';
+  document.querySelectorAll('#height-pick .opt').forEach(b => b.classList.toggle('on', Math.abs(+b.dataset.h - S.phoneH) < 0.01));
+  const mp = mapPutt();
+  $('height-note').textContent = mp.known ? 'Only used as a sanity check here — the page works out your phone height from the ball-to-hole distance.' : 'Used to work out the ball-to-hole distance (no scan to measure it from).';
+  document.querySelectorAll('#arrows-pick .opt').forEach(b => b.classList.toggle('on', (b.dataset.v === '1') === !!S.arrows));
+  $('fov').value = S.fov; $('fov-val').textContent = S.fov + '°';
+  $('sim-link').href = simHref();
+}
+function simHref() {
+  const g = S.greenSrc;
+  return 'green-sim.html' + (g === 'last-scan' ? '?green=last-scan' : (g === REAL_GREEN_ID ? '' : '?green=' + encodeURIComponent(g === 'manual' ? 'slope-lr' : g)));
+}
+document.querySelectorAll('#mode-pick .opt').forEach(b => b.addEventListener('click', () => {
+  S.mode = b.dataset.mode;
+  if (S.mode === 'green' && S.greenSrc === 'slope-lr') S.greenSrc = lastScanGreen ? 'last-scan' : REAL_GREEN_ID;
+  saveSettings(); renderSetup();
+}));
+document.querySelectorAll('#height-pick .opt').forEach(b => b.addEventListener('click', () => { S.phoneH = +b.dataset.h; saveSettings(); renderSetup(); }));
+document.querySelectorAll('#arrows-pick .opt').forEach(b => b.addEventListener('click', () => { S.arrows = b.dataset.v === '1'; saveSettings(); renderSetup(); }));
+$('fov').addEventListener('input', (e) => { S.fov = +e.target.value; saveSettings(); $('fov-val').textContent = S.fov + '°'; });
+$('coin-dist').value = S.coinDist; $('scanstart-dist').value = S.scanStartDist;
+$('coin-dist').addEventListener('change', (e) => { const v = parseFloat(e.target.value); if (v >= 0.5 && v <= 8) { S.coinDist = v; saveSettings(); } else e.target.value = S.coinDist; });
+$('scanstart-dist').addEventListener('change', (e) => { const v = parseFloat(e.target.value); if (v >= 0.5 && v <= 15) { S.scanStartDist = v; saveSettings(); } else e.target.value = S.scanStartDist; });
+$('scan-file').addEventListener('change', (e) => {
+  const file = e.target.files && e.target.files[0]; e.target.value = '';
+  if (!file) return;
+  toast('Reading ' + file.name + '…', 20000);
+  const reader = new FileReader();
+  reader.onerror = () => toast('Could not read that file', 3500);
+  reader.onload = () => setTimeout(() => {
+    try {
+      const buf = reader.result;
+      const head = new TextDecoder('utf-8').decode(new Uint8Array(buf, 0, Math.min(16, buf.byteLength))).trim();
+      let shortName = file.name.replace(/\.[^.]+$/, ''); if (shortName.length > 18) shortName = shortName.slice(0, 8) + '…' + shortName.slice(-6);
+      let json;
+      if (head.indexOf('ply') === 0) {
+        const P = parsePLYPoints(buf);
+        if (P.x.length < 500) throw new Error('Too few points in this scan');
+        json = pointsToHeightmap(P, 'Scan: ' + shortName);
+      } else { json = JSON.parse(new TextDecoder('utf-8').decode(new Uint8Array(buf))); if (!json.name) json.name = 'Scan: ' + shortName; }
+      loadHeightmapObject(json, 'test-parse'); // validates
+      const rec = { stamp: Date.now(), name: json.name, json };
+      try { localStorage.setItem(LAST_SCAN_KEY, JSON.stringify(rec)); } catch (_) { toast('Loaded, but too big to remember for next time', 3000); }
+      lastScanGreen = loadHeightmapObject(json, 'last-scan'); lastScanGreen.name = json.name; lastScanMeta = rec;
+      S.greenSrc = 'last-scan'; if (S.mode === 'green' && !simPuttFor(lastScanGreen)) S.placement = 'scanstart';
+      saveSettings(); renderSetup();
+      toast('Loaded ' + json.name, 2500);
+    } catch (err) { toast('Could not load: ' + err.message, 5000); }
+  }, 30);
+  reader.readAsArrayBuffer(file);
+});
+
+// ---------------- init ----------------
+loadLastScan();
+fetch(REAL_GREEN_URL, { cache: 'no-cache' }).then(r => { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
+  .then(j => { realGreen = loadHeightmapObject(j, REAL_GREEN_ID); renderSetup(); if (step !== 'setup') { ensureSolve(); updateUI(); } })
+  .catch(err => toast('Could not load your green: ' + err.message, 4000));
+if (DEMO) { $('start-btn').textContent = 'Start demo'; if (!qs.get('green')) S.greenSrc = 'slope-lr'; }
+renderSetup();
+updateUI();
+requestAnimationFrame(frame);
+// test hooks
+window.__ar = { S, get step() { return step; }, get trB() { return trB; }, get trH() { return trH; }, get pose() { return pose; }, get solution() { return solution; }, get putt() { return putt; },
+  get solving() { return solving; }, get fps() { return fpsAvg; }, get trackMs() { return trackMsAvg; }, placeAt, t2s, s2t, demoTruthPixels, get demo() { return demo; }, get K() { return K; }, mapPutt };
+</script>
+</body>
+</html>
