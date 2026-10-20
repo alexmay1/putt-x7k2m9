@@ -1845,6 +1845,8 @@
         function defaultMarkersFor(g) {
             // A first putt to look at on the real green: sidehill, in the cleanly scanned part.
             if (g.id === 'real-green-1') return { ball: { x: 0.0, z: 0.4 }, hole: { x: 0.4, z: -2.0 } };
+            // A newly loaded scan: LiDARo keeps where the scan started as (0,0), facing up the screen.
+            if (g.id === LAST_SCAN_ID) return { ball: { x: 0.0, z: 0.0 }, hole: { x: 0.0, z: -2.5 } };
             return null;
         }
 

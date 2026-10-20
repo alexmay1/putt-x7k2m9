@@ -31,6 +31,10 @@
   .row .stimp { flex: 1.6; display: flex; align-items: center; justify-content: space-between; border-radius: 12px; border: 2px solid rgba(255,255,255,0.25); background: rgba(255,255,255,0.08); }
   .row .stimp button { flex: 0 0 52px; height: 52px; border: none; background: none; font-size: 26px; }
   .row .stimp span { font-size: 15px; font-weight: 800; text-align: center; }
+  #why { position: fixed; left: 8px; right: 8px; top: calc(env(safe-area-inset-top) + 92px); padding: 12px 14px; font-weight: 800; font-size: 16px; line-height: 1.35; color: #000; background: #ffd60a; border-radius: 12px; display: none; pointer-events: none; z-index: 5; }
+  #why small { display: block; font-size: 13px; font-weight: 700; margin-top: 3px; }
+  #legend { display: flex; gap: 10px; justify-content: center; flex-wrap: wrap; font-size: 13px; font-weight: 800; }
+  #legend span { white-space: nowrap; }
   #lost { position: fixed; left: 8px; right: 8px; bottom: calc(env(safe-area-inset-bottom) + 200px); padding: 12px; text-align: center; font-weight: 800; font-size: 16px; color: #000; background: #ffd60a; border-radius: 12px; display: none; }
   .sheet { position: fixed; inset: 0; background: rgba(8,8,8,0.97); overflow-y: auto; -webkit-overflow-scrolling: touch; padding: calc(env(safe-area-inset-top) + 14px) 16px calc(env(safe-area-inset-bottom) + 24px); z-index: 10; }
   .sheet h1 { font-size: 22px; color: #22c55e; margin-bottom: 4px; }
@@ -65,10 +69,12 @@
 </div>
 <div id="prompt" class="glass" style="display:none"></div>
 <div id="lost"></div>
+<div id="why"></div>
 <div id="bottom" class="glass" style="display:none">
   <div id="readout"></div>
+  <div id="legend"></div>
   <div class="seg" id="power-seg">
-    <button data-p="25">Soft</button><button data-p="50">Medium</button><button data-p="80">Hard</button>
+    <button data-p="all">All</button><button data-p="25">Soft</button><button data-p="50">Medium</button><button data-p="80">Hard</button>
   </div>
   <div class="row">
     <button id="retap-btn">↺ Re-tap</button>
@@ -166,7 +172,7 @@ const DEMO = qs.has('demo');
 // ---------------- settings ----------------
 const S = Object.assign({
   mode: 'green', greenSrc: REAL_GREEN_ID, placement: 'sim', scanStartDist: 3.0, coinDist: 2.0,
-  manual: { dir: 'right', slope: 2, hill: 'flat' }, phoneH: 1.5, fov: 70, power: 50, stimp: 10, arrows: true
+  manual: { dir: 'right', slope: 2, hill: 'flat' }, phoneH: 1.5, fov: 70, power: 50, stimp: 10, arrows: true, view: 'all'
 }, readJSON(AR_KEY) || {});
 if (qs.get('mode') === 'indoor') { S.mode = 'indoor'; if (!qs.get('green')) S.greenSrc = 'slope-lr'; }
 if (qs.get('mode') === 'green') S.mode = 'green';
@@ -215,7 +221,10 @@ function defaultMarkers(g) {
 // Ball/hole on the map, and whether the distance is known (map) or must come from phone height (tap).
 function mapPutt() {
   const g = currentGreen();
-  if (!g) return { err: 'Loading the green…' };
+  if (!g) {
+    if (S.greenSrc === 'last-scan') return { err: 'Your scan didn\'t carry over from the simulator (phone storage blocked or full).<small>Tap ⚙︎ → Load scan file to load it here.</small>' };
+    return { err: 'Loading the green…' };
+  }
   const isGrid = g.kind === 'grid';
   if (S.mode === 'indoor') {
     const D = S.coinDist;
@@ -229,16 +238,22 @@ function mapPutt() {
     return { g, ball: { x: 0, z: D / 2 }, hole: { x: 0, z: -D / 2 }, known: true };
   }
   if (isGrid) {
-    let r;
+    let r = null, why = '';
+    selectedPreset = g;
+    const on = (m) => m && isFinite(m.x) && isFinite(m.z) && isOnGreen(m.x, m.z);
     if (S.placement === 'scanstart') r = { g, ball: { x: 0, z: 0 }, hole: { x: 0, z: -S.scanStartDist }, known: true };
     else {
       const sp = simPuttFor(g) || defaultMarkers(g);
-      if (!sp) return { g, err: 'Place the ball and hole on this scan in the simulator first, or pick "Scan started at the ball".' };
-      r = { g, ball: sp.ball, hole: sp.hole, known: true };
+      if (!sp) why = 'Ball and hole weren\'t placed on this scan in the simulator';
+      else r = { g, ball: sp.ball, hole: sp.hole, known: true };
     }
-    selectedPreset = g;
-    if (!isOnGreen(r.ball.x, r.ball.z) || !isOnGreen(r.hole.x, r.hole.z)) return { g, err: 'The ' + (!isOnGreen(r.ball.x, r.ball.z) ? 'ball' : 'hole') + ' spot is outside the scanned area. Move it in the simulator.' };
-    return r;
+    if (r && on(r.ball) && on(r.hole)) return r;
+    if (r && !why) why = 'The ' + (!on(r.ball) ? 'ball' : 'hole') + ' spot from the simulator is outside this scan';
+    // Fallback: assume the scan started at the ball facing the hole (LiDARo keeps that as 0,0 / up the screen),
+    // and take the distance from your taps + phone height.
+    let anchor = { x: 0, z: 0 };
+    if (!on(anchor)) anchor = { x: (g.bounds.x0 + g.bounds.x1) / 2, z: (g.bounds.z0 + g.bounds.z1) / 2 };
+    return { g, ball: null, hole: null, known: false, anchor, assumed: why + ' — so I\'m assuming you started the scan at the ball, facing the hole. For an exact line, place them in the simulator.' };
   }
   // Practice/manual slope on a real green: distance from phone height at tap time.
   return { g, ball: null, hole: null, known: false };
@@ -260,10 +275,12 @@ let step = 'setup';        // setup | ball | hole | live
 let trB = null, trH = null;
 let tapD = null;           // ball->hole distance fixed at tap time (tap geometry)
 let putt = null;           // { g, ball, hole } in map coords used for the solve
-let solution = null, solveKey = '', solving = false;
+let solution = null, solutions = {}, solveKey = '', solving = false;
+function nearestPower() { return POWERS.reduce((a, c) => Math.abs(c.p - S.power) < Math.abs(a.p - S.power) ? c : a); }
+function pickSolution() { solution = solutions[nearestPower().p] || null; }
 let orient = null, lastR = null, upSmooth = null, hasSensor = false;
 let pose = null, lastVideoTime = -1, frameCount = 0, trackMsAvg = 0, fpsAvg = 0, lastFrameTs = 0;
-let drag = null;
+let drag = null, poseWhy = '', lastWhyTs = 0;
 let demo = null;
 
 const HAS_RVFC = 'requestVideoFrameCallback' in HTMLVideoElement.prototype;
@@ -382,14 +399,14 @@ function demoTruthPixels() { // for tests
 
 // ---------------- taps ----------------
 function beginTaps() {
-  trB = trH = null; tapD = null; pose = null; solution = null; solveKey = '';
+  trB = trH = null; tapD = null; pose = null; solution = null; solutions = {}; solveKey = '';
   step = 'ball';
   const mp = mapPutt();
-  if (mp.err) toast(mp.err, 5000);
+  if (mp.err) toast(mp.err.replace(/<[^>]+>/g, ' '), 5000);
   updateUI();
 }
 function placeAt(screenPt) {
-  if (!setupTrackSize()) return;
+  if (!setupTrackSize()) { toast('Camera isn\'t running yet (no video). Wait a second and tap again; if it stays black, reload and allow Camera.', 4000); return; }
   grabGray();
   const t = s2t(screenPt);
   if (t.x < 0 || t.y < 0 || t.x >= TW || t.y >= TH) return;
@@ -401,7 +418,7 @@ function placeAt(screenPt) {
     if (!mp.known) {
       const up = A.upInCamera(currentR());
       tapD = A.groundDistance(K, up, trB, trH, S.phoneH);
-      if (!tapD || tapD < 0.3) { toast('Could not read that distance. Tap the ball and hole on the ground, below the horizon.', 4000); beginTaps(); return; }
+      if (!tapD || !isFinite(tapD) || tapD < 0.3) tapD = null; // explained on screen; the straight guide still shows
     }
     if (trB.lowTexture || trH.lowTexture) toast('That spot has little texture to lock on to. Tracking may slip.', 3000);
     ensureSolve();
@@ -446,25 +463,32 @@ function puttForSolve() {
   if (mp.err || !mp.g) return null;
   if (mp.known) return { g: mp.g, ball: mp.ball, hole: mp.hole };
   if (!tapD) return null;
+  if (mp.anchor) return { g: mp.g, ball: mp.anchor, hole: { x: mp.anchor.x, z: mp.anchor.z - tapD }, tap: true, assumed: mp.assumed };
   return { g: mp.g, ball: { x: 0, z: tapD / 2 }, hole: { x: 0, z: -tapD / 2 }, tap: true };
 }
 function ensureSolve() {
   const p = puttForSolve();
   putt = p;
-  if (!p) { solution = null; return; }
-  const key = [p.g.id, p.ball.x, p.ball.z, p.hole.x, p.hole.z, S.power, S.stimp].map(v => typeof v === 'number' ? v.toFixed(3) : v).join('|');
-  if (key === solveKey) return;
-  solveKey = key; solving = true; updateUI();
-  setTimeout(() => {
+  if (!p) { solution = null; solutions = {}; return; }
+  const key = [p.g.id, p.ball.x, p.ball.z, p.hole.x, p.hole.z, S.stimp].map(v => typeof v === 'number' ? v.toFixed(3) : v).join('|');
+  if (key === solveKey) { pickSolution(); return; }
+  solveKey = key; solving = true; solutions = {}; solution = null; updateUI();
+  // All three paces, one per tick so the screen stays live.
+  const todo = POWERS.map(q => q.p);
+  const next = () => {
+    if (key !== solveKey) return; // superseded
+    const pw = todo.shift();
+    if (pw === undefined) { solving = false; pickSolution(); updateUI(); return; }
     selectedPreset = p.g; stimp = S.stimp;
     const t0 = performance.now();
     let sol = null;
-    try { sol = solveAimAngle(p.ball, p.hole, S.power); } catch (err) { console.error(err); }
-    if (key !== solveKey) return; // superseded
-    solution = sol; solving = false;
-    solution && (solution.ms = performance.now() - t0);
-    updateUI();
-  }, 20);
+    try { sol = solveAimAngle(p.ball, p.hole, pw); } catch (err) { console.error(err); sol = { missed: true, error: String(err) }; }
+    if (sol) { sol.ms = performance.now() - t0; if (sol.aimPoint && !(isFinite(sol.aimPoint.x) && isFinite(sol.aimPoint.z))) sol.missed = true; }
+    solutions[pw] = sol;
+    pickSolution(); updateUI();
+    setTimeout(next, 0);
+  };
+  setTimeout(next, 20);
 }
 function heightAt(x, z) { if (!putt) return 0; selectedPreset = putt.g; return getHeight(x, z); }
 
@@ -497,9 +521,13 @@ function frame(ts) {
   const up = A.upInCamera(R);
   upSmooth = upSmooth ? A.unit(A.add(A.mul(upSmooth, 0.6), A.mul(up, 0.4))) : up;
   pose = null;
+  poseWhy = '';
   if (step === 'live' && trB && trH && putt) {
-    pose = A.poseFromTaps(K, upSmooth, trB, trH, putt.ball, putt.hole, heightAt, null);
+    try { pose = A.poseFromTaps(K, upSmooth, trB, trH, putt.ball, putt.hole, heightAt, null); } catch (e) { pose = null; }
+    if (pose && !(isFinite(pose.H) && isFinite(pose.scale) && pose.scale > 0)) pose = null;
+    if (!pose) poseWhy = 'Can\'t place the green on the camera: both taps need to be on the ground, well below the horizon.';
   }
+  if (frameCount % 5 === 0 || !lastWhyTs || ts - lastWhyTs > 250) { lastWhyTs = ts; updateWhy(); }
   draw();
   if (frameCount % 10 === 0) updateStatus();
   if (qs.has('debug')) { $('debug').style.display = 'block'; $('debug').textContent = `fps ${fpsAvg.toFixed(0)}\ntrack ${trackMsAvg.toFixed(1)}ms\n${TW}x${TH} f=${K.f.toFixed(0)}\nB ${trB ? trB.score.toFixed(2) : '-'} H ${trH ? trH.score.toFixed(2) : '-'}\nH=${pose ? pose.H.toFixed(2) : '-'}`; }
@@ -512,7 +540,7 @@ function clearOverlay() {
 }
 
 // ---------------- drawing ----------------
-function projS(m, hOverride) { const p = pose.project(m.x, m.z, hOverride); return p ? t2s(p) : null; }
+function projS(m, hOverride) { const p = pose.project(m.x, m.z, hOverride); if (!p || !isFinite(p.x) || !isFinite(p.y)) return null; return t2s(p); }
 function strokePath(pts, color, width, dash) {
   ctx.lineCap = 'round'; ctx.lineJoin = 'round';
   for (const pass of [0, 1]) {
@@ -578,22 +606,38 @@ function drawArrows() {
   }
 }
 function powerColor() { let best = POWERS[0]; for (const p of POWERS) if (Math.abs(p.p - S.power) < Math.abs(best.p - S.power)) best = p; return best.color; }
+function shownPowers() { return S.view === 'all' ? POWERS : [nearestPower()]; }
+let drawnLines = 0;
 function draw() {
   clearOverlay();
+  drawnLines = 0;
+  // Always: a straight ball -> hole guide between the two taps (needs no pose or solve).
+  if (trB && trH) {
+    const a = t2s(trB), b = t2s(trH);
+    ctx.setLineDash([4, 8]); ctx.lineCap = 'round';
+    ctx.strokeStyle = 'rgba(0,0,0,0.7)'; ctx.lineWidth = 5; ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke();
+    ctx.strokeStyle = 'rgba(255,255,255,0.9)'; ctx.lineWidth = 2; ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke();
+    ctx.setLineDash([]);
+  }
   if (pose && putt) {
     if (S.arrows) drawArrows();
-    const sol = solution;
-    if (sol && !sol.missed && !solving) {
+    const list = shownPowers().map(q => ({ q, sol: solutions[q.p] })).filter(o => o.sol && !o.sol.missed && o.sol.sinkPath);
+    // run-past (faded) and AIM HERE first, make lines on top
+    for (const { q, sol } of list) {
       if (sol.overrunPath && sol.overrunPath.length > 1) strokePath(sol.overrunPath, 'rgba(255,255,255,0.45)', 3, [8, 7]);
-      // blue start line ball -> AIM HERE
-      strokePath([putt.ball, sol.aimPoint], 'rgba(100,200,255,0.95)', 3, [10, 8]);
-      fillGround(groundCircle(sol.aimPoint, 0.09), 'rgba(100,200,255,0.35)');
-      strokePath(groundCircle(sol.aimPoint, 0.09), '#64c8ff', 4);
-      const sa = projS(sol.aimPoint);
-      if (sa) label('AIM HERE', { x: sa.x, y: sa.y - 26 }, '#64c8ff', 17);
-      const path = sol.sinkPath.slice(); path[path.length - 1] = putt.hole;
-      strokePath(path, powerColor(), 6);
+      strokePath([putt.ball, sol.aimPoint], 'rgba(100,200,255,0.9)', 2, [10, 8]);
+      fillGround(groundCircle(sol.aimPoint, 0.08), 'rgba(100,200,255,0.30)');
+      strokePath(groundCircle(sol.aimPoint, 0.08), '#64c8ff', 4);
     }
+    for (const { q, sol } of list) {
+      const path = sol.sinkPath.slice(); path[path.length - 1] = putt.hole;
+      strokePath(path, q.color, list.length > 1 ? 5 : 6);
+      drawnLines++;
+    }
+    list.forEach(({ q, sol }, i) => {
+      const sa = projS(sol.aimPoint);
+      if (sa) label(list.length > 1 ? q.name.toUpperCase() : 'AIM HERE', { x: sa.x, y: sa.y + (list.length > 1 && i % 2 ? 22 : -22) }, list.length > 1 ? q.color : '#64c8ff', list.length > 1 ? 13 : 17);
+    });
     strokePath(groundCircle(putt.hole, 0.054), '#ffffff', 3);
   }
   if (trB) drawMarker(trB, '#ffffff', 'BALL');
@@ -630,6 +674,29 @@ function updateStatus() {
   lostEl.style.display = step === 'live' && lostLong ? 'block' : 'none';
   lostEl.textContent = 'Lost the ' + (trB && trB.lostFrames > 45 ? 'ball' : 'hole') + ' — hold still, or tap ↺ Re-tap';
 }
+// Exactly why there's no make line, and what to tap. Shown whenever we're live without a make line.
+function whyNoLine() {
+  if (step !== 'live') return '';
+  const mp = mapPutt();
+  if (mp.err) return mp.err + (mp.err.indexOf('<small>') < 0 ? '<small>Tap ⚙︎ to pick another green or load the scan here.</small>' : '');
+  if (!putt && !mp.known && !tapD) return 'Couldn\'t work out the ball-to-hole distance from your taps.<small>Tap ↺ Re-tap: ball first, then the hole, both on the ground below the horizon.</small>';
+  if (!putt) return 'Waiting for the green to load…';
+  if (poseWhy) return poseWhy + '<small>Tap ↺ Re-tap. Point the camera down at the green so ball and hole are in the lower part of the screen.</small>';
+  if (solving && !drawnLines) return 'Working out the make lines…';
+  if (!solving && !drawnLines) {
+    const shown = shownPowers().map(q => solutions[q.p]);
+    const offScan = shown.some(s => s && s.runsOff);
+    if (S.view !== 'all' && POWERS.some(q => solutions[q.p] && !solutions[q.p].missed)) return 'No make line at ' + nearestPower().name + ' pace.<small>Tap All to see the paces that do hole.</small>';
+    return 'No make line at any pace for this putt' + (offScan ? ' — the ball runs off the scanned area' : '') + '.<small>Try another Stimp (−/+), or move ball/hole in the simulator. The dashed line is just ball→hole.</small>';
+  }
+  return '';
+}
+function updateWhy() {
+  const w = whyNoLine(), el = $('why');
+  const note = putt && putt.assumed && drawnLines ? '⚠︎ ' + putt.assumed : '';
+  if (w || note) { el.innerHTML = w || note; el.style.display = 'block'; el.style.background = w ? '#ffd60a' : 'rgba(255,214,10,0.85)'; el.style.fontSize = w ? '16px' : '13px'; }
+  else el.style.display = 'none';
+}
 function updateUI() {
   const pr = $('prompt');
   if (step === 'ball') { pr.style.display = 'block'; pr.innerHTML = 'Tap the BALL ⚪<small>' + (S.mode === 'indoor' ? 'your first coin' : 'stand behind it with the hole on screen too') + '</small>'; }
@@ -638,16 +705,27 @@ function updateUI() {
   // While tapping, hide the button panel so the ball can be tapped anywhere on screen.
   if (step !== 'setup') $('bottom').style.display = (step === 'ball' || step === 'hole') ? 'none' : 'flex';
   document.querySelectorAll('#power-seg button').forEach(b => {
-    const p = +b.dataset.p; const best = POWERS.reduce((a, c) => Math.abs(c.p - S.power) < Math.abs(a.p - S.power) ? c : a);
-    b.classList.toggle('on', best.p === p); b.style.borderColor = best.p === p ? POWERS.find(q => q.p === p).color : '';
-    if (best.p === p) b.style.background = POWERS.find(q => q.p === p).color;
-    else b.style.background = '';
+    const isAll = b.dataset.p === 'all';
+    const on = isAll ? S.view === 'all' : (S.view !== 'all' && nearestPower().p === +b.dataset.p);
+    const col = isAll ? '#ffffff' : POWERS.find(q => q.p === +b.dataset.p).color;
+    b.classList.toggle('on', on);
+    b.style.background = on ? col : ''; b.style.color = on ? '#000' : (isAll ? '#fff' : col); b.style.borderColor = on ? col : '';
   });
+  // legend: every pace with its aim, like the simulator
+  const lg = $('legend');
+  if (step === 'live' && putt) {
+    lg.innerHTML = POWERS.map(q => {
+      const s = solutions[q.p];
+      let t = !s ? '…' : (s.missed ? 'no make' : (() => { const sd = A.sideOf(putt.ball, putt.hole, s.aimPoint); return sd.dist < 0.03 ? 'straight' : (sd.dist < 0.995 ? Math.round(sd.dist * 100) + ' cm' : sd.dist.toFixed(1) + ' m') + ' ' + (sd.side === 'left' ? 'L' : 'R'); })());
+      return `<span style="color:${q.color}">━ ${q.name} ${t}</span>`;
+    }).join('') + '<span style="color:#bbb">┅ run-past</span>';
+  } else lg.innerHTML = '';
   $('stimp-val').textContent = 'Stimp ' + (S.stimp % 1 ? S.stimp.toFixed(1) : S.stimp);
   const ro = $('readout');
   if (step !== 'live') ro.innerHTML = step === 'setup' ? '' : 'Tap ' + (step === 'ball' ? 'the ball' : 'the hole');
   else if (!putt) ro.innerHTML = '<span class="warn">' + (mapPutt().err || 'Waiting…') + '</span>';
-  else if (solving) ro.innerHTML = 'Solving the putt…';
+  else if (solving && !Object.keys(solutions).length) ro.innerHTML = 'Solving the putt…';
+  else if (S.view === 'all') ro.innerHTML = '<span class="aim">AIM HERE</span> ring per pace · tap a pace for one';
   else if (!solution || solution.missed) ro.innerHTML = '<span style="color:#ffb450">No make line at this pace' + (solution && solution.runsOff ? ' (ball runs off the scan)' : '') + '</span>';
   else {
     const sd = A.sideOf(putt.ball, putt.hole, solution.aimPoint);
@@ -658,7 +736,10 @@ function updateUI() {
   updateStatus();
   renderSetup();
 }
-document.querySelectorAll('#power-seg button').forEach(b => b.addEventListener('click', () => { S.power = +b.dataset.p; saveSettings(); ensureSolve(); updateUI(); }));
+document.querySelectorAll('#power-seg button').forEach(b => b.addEventListener('click', () => {
+  if (b.dataset.p === 'all') S.view = 'all'; else { S.view = 'one'; S.power = +b.dataset.p; }
+  saveSettings(); ensureSolve(); updateUI();
+}));
 $('stimp-minus').addEventListener('click', () => { S.stimp = Math.max(6, S.stimp - 0.5); saveSettings(); ensureSolve(); updateUI(); });
 $('stimp-plus').addEventListener('click', () => { S.stimp = Math.min(14, S.stimp + 0.5); saveSettings(); ensureSolve(); updateUI(); });
 $('retap-btn').addEventListener('click', () => beginTaps());
@@ -766,7 +847,7 @@ updateUI();
 requestAnimationFrame(frame);
 // test hooks
 window.__ar = { S, get step() { return step; }, get trB() { return trB; }, get trH() { return trH; }, get pose() { return pose; }, get solution() { return solution; }, get putt() { return putt; },
-  get solving() { return solving; }, get fps() { return fpsAvg; }, get trackMs() { return trackMsAvg; }, placeAt, t2s, s2t, demoTruthPixels, get demo() { return demo; }, get K() { return K; }, mapPutt };
+  get solving() { return solving; }, get solutions() { return solutions; }, get drawnLines() { return drawnLines; }, whyNoLine, get fps() { return fpsAvg; }, get trackMs() { return trackMsAvg; }, placeAt, t2s, s2t, demoTruthPixels, get demo() { return demo; }, get K() { return K; }, mapPutt };
 </script>
 </body>
 </html>
