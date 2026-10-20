@@ -153,11 +153,13 @@
     <li>After the line shows, drag a marker to fine-tune it (moves at half speed so your finger doesn't hide it).</li>
     <li>Keep the phone upright-ish (screen facing you, camera pointing at the ground ahead).</li>
   </ul>
+  <p id="dbg" style="font:11px/1.4 ui-monospace,Menlo,monospace;color:#9aa;word-break:break-all;margin-top:10px"></p>
   <button class="big" id="info-close">Got it</button>
 </div>
 
 <script src="putt-core.js"></script>
 <script src="ar-core.js"></script>
+<script src="ar-detect.js"></script>
 <script>
 'use strict';
 const A = window.ARCore;
@@ -182,7 +184,9 @@ if (qs.get('green')) {
   if (!qs.get('mode')) S.mode = 'green';
   const n = (k) => parseFloat(qs.get(k));
   if (isFinite(n('bx')) && isFinite(n('bz')) && isFinite(n('hx')) && isFinite(n('hz'))) {
-    urlPutt = { green: S.greenSrc, ball: { x: n('bx'), z: n('bz') }, hole: { x: n('hx'), z: n('hz') } };
+    // sc = the scan's stamp when the simulator made this link; t = when. Without sc (older links) the spots are unverified.
+    urlPutt = { green: S.greenSrc, ball: { x: n('bx'), z: n('bz') }, hole: { x: n('hx'), z: n('hz') },
+                sc: isFinite(n('sc')) ? n('sc') : null, t: isFinite(n('t')) ? n('t') : 0, src: 'link' };
     S.placement = 'sim';
   }
   if (isFinite(n('p'))) S.power = Math.max(0, Math.min(100, n('p')));
@@ -258,14 +262,32 @@ function mapPutt() {
   // Practice/manual slope on a real green: distance from phone height at tap time.
   return { g, ball: null, hole: null, known: false };
 }
+// Where the simulator's ball/hole come from. Two sources: this page's link (?bx..) and the simulator's saved state
+// (localStorage). A link can be stale: the page reopened by Safari / Forward button / an old tab after a NEW scan was
+// loaded, so its spots belong to the old scan. Only trust a spot that was made for the scan we have now (same stamp),
+// and take the newest one.
+let simSrcInfo = '';
 function simPuttFor(g) {
-  if (urlPutt && urlPutt.green === S.greenSrc) return urlPutt;
+  const isScan = g.id === 'last-scan', stamp = lastScanMeta && lastScanMeta.stamp;
+  const okPt = (m) => m && isFinite(m.x) && isFinite(m.z);
+  const cands = [];
+  if (urlPutt && urlPutt.green === g.id && okPt(urlPutt.ball) && okPt(urlPutt.hole)) {
+    const fresh = !isScan || (urlPutt.sc !== null && urlPutt.sc === stamp);
+    const unverified = isScan && urlPutt.sc === null;
+    if (fresh || unverified) cands.push(Object.assign({}, urlPutt, { t: fresh ? urlPutt.t : -1 }));
+  }
   const st = readJSON(SIM_STATE_KEY);
-  if (!st || !st.ball || !st.hole) return null;
-  if (st.greenId !== g.id) return null;
-  if (g.id === 'last-scan' && lastScanMeta && st.scanStamp !== lastScanMeta.stamp) return null;
-  return st;
+  if (st && okPt(st.ball) && okPt(st.hole) && st.greenId === g.id && (!isScan || st.scanStamp === stamp))
+    cands.push({ green: st.greenId, ball: st.ball, hole: st.hole, sc: st.scanStamp, t: st.t || 0, src: 'simulator memory' });
+  // Unverified (no stamp) link spots only count if they're actually on this scan.
+  const usable = cands.filter(c => c.t >= 0 || (isOnGreenOf(g, c.ball) && isOnGreenOf(g, c.hole)));
+  usable.sort((a, b) => b.t - a.t);
+  const pick = usable[0] || null;
+  const rej = urlPutt && urlPutt.green === g.id && (!pick || pick.src !== 'link') ? ' (ignored the link\'s spots: made for ' + (urlPutt.sc ? 'scan #' + urlPutt.sc : 'an unknown scan') + ')' : '';
+  simSrcInfo = pick ? 'from ' + pick.src + rej : 'none' + rej;
+  return pick;
 }
+function isOnGreenOf(g, m) { const keep = selectedPreset; selectedPreset = g; try { return isOnGreen(m.x, m.z); } finally { selectedPreset = keep; } }
 
 // ---------------- runtime state ----------------
 const video = $('video'), canvas = $('overlay'), ctx = canvas.getContext('2d');
@@ -405,12 +427,72 @@ function beginTaps() {
   if (mp.err) toast(mp.err.replace(/<[^>]+>/g, ' '), 5000);
   updateUI();
 }
+// ---------------- tap assist: snap a tap to the ball / cup ----------------
+// Runs on a small crop of the full-res video frame around the tap. Expected sizes come from the ground projection
+// (phone tilt + phone height), so a far ball must look small and a near one big. Prefers "no snap" over a wrong one.
+const detCanvas = document.createElement('canvas'), dctx = detCanvas.getContext('2d', { willReadFrequently: true });
+const DET = window.ARDetect;
+let snapFx = [], cupHint = null, cupHintTs = 0;
+function videoCrop(cx, cy, R, s) { // video px; returns crop with mapping back to video px
+  const vw = video.videoWidth, vh = video.videoHeight;
+  const x0 = Math.max(0, Math.floor(cx - R)), y0 = Math.max(0, Math.floor(cy - R)), x1 = Math.min(vw, Math.ceil(cx + R)), y1 = Math.min(vh, Math.ceil(cy + R));
+  const w = Math.max(4, Math.round((x1 - x0) * s)), h = Math.max(4, Math.round((y1 - y0) * s));
+  if (detCanvas.width !== w || detCanvas.height !== h) { detCanvas.width = w; detCanvas.height = h; }
+  dctx.drawImage(video, x0, y0, x1 - x0, y1 - y0, 0, 0, w, h);
+  const sx = w / (x1 - x0), sy = h / (y1 - y0);
+  return { data: dctx.getImageData(0, 0, w, h).data, w, h, toSrc: (u, v) => ({ x: x0 + u / sx, y: y0 + v / sy }), fromSrc: (x, y) => ({ x: (x - x0) * sx, y: (y - y0) * sy }), s: sx };
+}
+function detectorExpect(up, Hm, c, vs) { // crop px -> expected ball radius / cup ellipse in crop px
+  return (u, v) => { const p = c.toSrc(u, v); const e = DET.expectedEllipse(K, up, p.x / vs, p.y / vs, Hm, DET.CUP_R);
+    return e && { ballR: e.ballR * vs * c.s, a: e.a * vs * c.s, b: e.b * vs * c.s, theta: e.theta }; };
+}
+function snapTap(kind, t) { // t: track px. Returns { x, y (track px), snapped, ms } — never throws
+  const t0 = performance.now();
+  try {
+    if (!DET || DEMO && !S.snapDemo) return { x: t.x, y: t.y, snapped: false, ms: 0, why: 'off' };
+    const up = A.upInCamera(currentR()), Hm = S.phoneH, vs = video.videoWidth / TW, k = video.videoWidth / 720;
+    const e = DET.expectedEllipse(K, up, t.x, t.y, Hm, DET.CUP_R);
+    if (!e) return { x: t.x, y: t.y, snapped: false, ms: 0, why: 'sky' };
+    const exR = (kind === 'ball' ? e.ballR : e.a) * vs;
+    const searchR = kind === 'ball' ? Math.min(90 * k, Math.max(30 * k, 5 * exR)) : Math.min(120 * k, Math.max(30 * k, 3 * exR));
+    const sc = Math.min(1, (kind === 'ball' ? 6 : 10) / exR);
+    const tv = { x: t.x * vs, y: t.y * vs };
+    const c = videoCrop(tv.x, tv.y, searchR * 1.25, sc);
+    const r = (kind === 'ball' ? DET.findBall : DET.findCup)(c, c.fromSrc(tv.x, tv.y), detectorExpect(up, Hm, c, vs), searchR * c.s);
+    const ms = performance.now() - t0;
+    if (!r.ok) return { x: t.x, y: t.y, snapped: false, ms, why: r.reason };
+    const p = c.toSrc(r.x, r.y);
+    return { x: p.x / vs, y: p.y / vs, snapped: true, conf: r.conf, ms, rTrack: (kind === 'ball' ? r.r : r.a) / c.s / vs };
+  } catch (err) { return { x: t.x, y: t.y, snapped: false, ms: performance.now() - t0, why: 'error ' + (err && err.message) }; }
+}
+// After the ball tap: look over the part of the frame beyond the ball for a cup and suggest it (tap it to confirm).
+function autoFindCup() {
+  cupHint = null;
+  if (!DET || !trB || step !== 'hole' || (DEMO && !S.snapDemo)) return;
+  try {
+    const up = A.upInCamera(currentR()), Hm = S.phoneH, vs = video.videoWidth / TW;
+    const vw = video.videoWidth, vh = video.videoHeight, by = trB.y * vs;
+    const s = Math.min(1, 240 / vw), cy = Math.max(vh * 0.05, by - 30) / 2, R = Math.max(vw, cy * 2) / 2;
+    const c = videoCrop(vw / 2, cy, R, s);
+    const r = DET.findCup(c, null, detectorExpect(up, Hm, c, vs), 0, { threshold: 0.6 });
+    if (r.ok) { const p = c.toSrc(r.x, r.y); cupHint = { x: p.x / vs, y: p.y / vs, a: r.a / c.s / vs, conf: r.conf }; }
+  } catch (_) { cupHint = null; }
+}
 function placeAt(screenPt) {
   if (!setupTrackSize()) { toast('Camera isn\'t running yet (no video). Wait a second and tap again; if it stays black, reload and allow Camera.', 4000); return; }
   grabGray();
-  const t = s2t(screenPt);
+  let t = s2t(screenPt);
   if (t.x < 0 || t.y < 0 || t.x >= TW || t.y >= TH) return;
-  if (step === 'ball') { trB = A.createTracker(gray, TW, TH, t.x, t.y); step = 'hole'; }
+  // Tapped on (or near) the suggested cup: use it.
+  if (step === 'hole' && cupHint && Math.hypot(t.x - cupHint.x, t.y - cupHint.y) < Math.max(14, 2.5 * cupHint.a)) t = { x: cupHint.x, y: cupHint.y, hinted: true };
+  const kind = step === 'ball' ? 'ball' : 'cup';
+  const sn = t.hinted ? { x: t.x, y: t.y, snapped: true, ms: 0 } : snapTap(kind, t);
+  window.__lastSnap = Object.assign({ kind }, sn);
+  if (sn.snapped) { t = { x: sn.x, y: sn.y }; snapFx.push({ x: sn.x, y: sn.y, t0: performance.now(), color: kind === 'ball' ? '#ffffff' : '#ff5ad1' }); }
+  if (kind === 'ball') toast(sn.snapped ? 'Snapped to the ball ✓' : (sn.why === 'off' ? '' : 'Using your tap (no ball found)'), 1600);
+  else toast(sn.snapped ? (t.hinted || sn.hinted ? 'Using the cup I found ✓' : 'Snapped to the cup ✓') : 'Using your tap (no cup found)', 1800);
+  cupHint = null;
+  if (step === 'ball') { trB = A.createTracker(gray, TW, TH, t.x, t.y); step = 'hole'; setTimeout(autoFindCup, 0); }
   else if (step === 'hole') {
     trH = A.createTracker(gray, TW, TH, t.x, t.y);
     step = 'live';
@@ -470,7 +552,7 @@ function ensureSolve() {
   const p = puttForSolve();
   putt = p;
   if (!p) { solution = null; solutions = {}; return; }
-  const key = [p.g.id, p.ball.x, p.ball.z, p.hole.x, p.hole.z, S.stimp].map(v => typeof v === 'number' ? v.toFixed(3) : v).join('|');
+  const key = [p.g.id, (p.g.id === 'last-scan' && lastScanMeta ? lastScanMeta.stamp : ''), p.ball.x, p.ball.z, p.hole.x, p.hole.z, S.stimp].map(v => typeof v === 'number' ? v.toFixed(3) : v).join('|');
   if (key === solveKey) { pickSolution(); return; }
   solveKey = key; solving = true; solutions = {}; solution = null; updateUI();
   // All three paces, one per tick so the screen stays live.
@@ -501,6 +583,7 @@ function frame(ts) {
   if (!setupTrackSize()) return;
   if (lastFrameTs) fpsAvg = fpsAvg * 0.9 + 0.1 * (1000 / Math.max(1, ts - lastFrameTs));
   lastFrameTs = ts;
+  if (step === 'hole' && ts - cupHintTs > 600) { cupHintTs = ts; autoFindCup(); }
   const R = currentR();
   // Track once per new camera frame (requestVideoFrameCallback on Safari 15.4+, else every animation frame).
   const newVideoFrame = DEMO ? (demo && demo.frame !== demo.lastTracked) : (HAS_RVFC ? videoFrameSeq !== lastVideoTime : true);
@@ -642,6 +725,14 @@ function draw() {
   }
   if (trB) drawMarker(trB, '#ffffff', 'BALL');
   if (trH) drawMarker(trH, '#ff5ad1', 'HOLE');
+  // brief "snapped" pulse
+  const now = performance.now();
+  snapFx = snapFx.filter(f => now - f.t0 < 700);
+  for (const f of snapFx) { const s = t2s(f), k = (now - f.t0) / 700; ctx.globalAlpha = 1 - k; ctx.strokeStyle = f.color; ctx.lineWidth = 3;
+    ctx.beginPath(); ctx.arc(s.x, s.y, 20 + 26 * (1 - k), 0, Math.PI * 2); ctx.stroke(); ctx.globalAlpha = 1; }
+  if (step === 'hole' && cupHint) { const s = t2s(cupHint), r = Math.max(16, cupHint.a * layout().k * 1.6);
+    ctx.setLineDash([6, 5]); ctx.lineWidth = 3; ctx.strokeStyle = '#ff5ad1'; ctx.beginPath(); ctx.arc(s.x, s.y, r + 4 * Math.sin(now / 180), 0, Math.PI * 2); ctx.stroke(); ctx.setLineDash([]);
+    label('Cup? tap to use', { x: s.x, y: s.y - r - 14 }, '#ff5ad1', 13); }
 }
 
 // ---------------- UI ----------------
@@ -744,7 +835,32 @@ $('stimp-minus').addEventListener('click', () => { S.stimp = Math.max(6, S.stimp
 $('stimp-plus').addEventListener('click', () => { S.stimp = Math.min(14, S.stimp + 0.5); saveSettings(); ensureSolve(); updateUI(); });
 $('retap-btn').addEventListener('click', () => beginTaps());
 $('setup-btn').addEventListener('click', () => { $('setup').style.display = 'block'; $('start-btn').textContent = 'Back to camera'; });
-$('info-btn').addEventListener('click', () => { $('info').style.display = 'block'; });
+$('info-btn').addEventListener('click', () => { refreshDebug(); $('info').style.display = 'block'; });
+function refreshDebug() {
+  const f = (m) => m && isFinite(m.x) ? `(${m.x.toFixed(2)}, ${m.z.toFixed(2)})` : '—';
+  const g = currentGreen(), mp = mapPutt(), sp = g ? simPuttFor(g) : null;
+  const u = urlPutt ? `link ball ${f(urlPutt.ball)} hole ${f(urlPutt.hole)} scan #${urlPutt.sc || '?'}` : 'link: no spots';
+  const st = readJSON(SIM_STATE_KEY);
+  const sm = st ? `sim memory ball ${f(st.ball)} hole ${f(st.hole)} scan #${st.scanStamp || '?'} (${st.greenId})` : 'sim memory: none';
+  const sc = g ? `${S.greenSrc} "${g.name}"${lastScanMeta && S.greenSrc === 'last-scan' ? ' #' + lastScanMeta.stamp : ''}${g.cols ? ' ' + g.cols + '×' + g.rows : ''}` : S.greenSrc + ' (not loaded)';
+  $('dbg').textContent = `debug · green: ${sc} · ${u} · ${sm} · using: ${sp ? f(sp.ball) + '→' + f(sp.hole) + ' ' + simSrcInfo : simSrcInfo} · ` +
+    `${mp.known ? 'on scan ✓' : (mp.assumed ? 'fallback (scan start)' : (mp.err ? 'error' : 'tap distance'))} · ${S.mode}/${S.placement}`;
+}
+// Safari may bring this page back from memory (Back/Forward, tab switch) after you loaded a new scan or moved the
+// ball in the simulator: re-read what the simulator saved so we never show an old scan's spots.
+function resyncFromStorage() {
+  const rec = readJSON(LAST_SCAN_KEY), st = readJSON(SIM_STATE_KEY);
+  const key = (rec && rec.stamp) + '|' + (st && st.t);
+  if (key === resyncKey) return;
+  resyncKey = key;
+  loadLastScan(); solveKey = ''; putt = null; solutions = {}; solution = null;
+  if (step !== 'setup') ensureSolve();
+  renderSetup(); updateUI();
+}
+let resyncKey = '';
+window.addEventListener('pageshow', (e) => { if (e.persisted) resyncFromStorage(); });
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') resyncFromStorage(); });
+window.addEventListener('storage', (e) => { if (e.key === LAST_SCAN_KEY || e.key === SIM_STATE_KEY) resyncFromStorage(); });
 $('info-close').addEventListener('click', () => { $('info').style.display = 'none'; });
 $('start-btn').addEventListener('click', () => {
   startCamera();
@@ -794,7 +910,12 @@ function renderSetup() {
 }
 function simHref() {
   const g = S.greenSrc;
-  return 'green-sim.html' + (g === 'last-scan' ? '?green=last-scan' : (g === REAL_GREEN_ID ? '' : '?green=' + encodeURIComponent(g === 'manual' ? 'slope-lr' : g)));
+  const base = 'green-sim.html' + (g === 'last-scan' ? '?green=last-scan' : (g === REAL_GREEN_ID ? '' : '?green=' + encodeURIComponent(g === 'manual' ? 'slope-lr' : g)));
+  // Carry the putt back so the simulator keeps your ball/hole (only for the same scan).
+  const cg = currentGreen(), sp = cg && cg.kind === 'grid' && S.placement === 'sim' ? simPuttFor(cg) : null;
+  if (!sp || base.indexOf('?') < 0) return base;
+  return base + `&bx=${sp.ball.x.toFixed(3)}&bz=${sp.ball.z.toFixed(3)}&hx=${sp.hole.x.toFixed(3)}&hz=${sp.hole.z.toFixed(3)}` +
+    (sp.sc ? '&sc=' + sp.sc : '') + '&p=' + Math.round(S.power) + '&s=' + S.stimp;
 }
 document.querySelectorAll('#mode-pick .opt').forEach(b => b.addEventListener('click', () => {
   S.mode = b.dataset.mode;
@@ -838,6 +959,7 @@ $('scan-file').addEventListener('change', (e) => {
 
 // ---------------- init ----------------
 loadLastScan();
+resyncKey = (() => { const rec = readJSON(LAST_SCAN_KEY), st = readJSON(SIM_STATE_KEY); return (rec && rec.stamp) + '|' + (st && st.t); })();
 fetch(REAL_GREEN_URL, { cache: 'no-cache' }).then(r => { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
   .then(j => { realGreen = loadHeightmapObject(j, REAL_GREEN_ID); renderSetup(); if (step !== 'setup') { ensureSolve(); updateUI(); } })
   .catch(err => toast('Could not load your green: ' + err.message, 4000));
@@ -846,7 +968,7 @@ renderSetup();
 updateUI();
 requestAnimationFrame(frame);
 // test hooks
-window.__ar = { S, get step() { return step; }, get trB() { return trB; }, get trH() { return trH; }, get pose() { return pose; }, get solution() { return solution; }, get putt() { return putt; },
+window.__ar = { snapTap, autoFindCup, get cupHint() { return cupHint; }, get lastSnap() { return window.__lastSnap; }, S, get step() { return step; }, get trB() { return trB; }, get trH() { return trH; }, get pose() { return pose; }, get solution() { return solution; }, get putt() { return putt; },
   get solving() { return solving; }, get solutions() { return solutions; }, get drawnLines() { return drawnLines; }, whyNoLine, get fps() { return fpsAvg; }, get trackMs() { return trackMsAvg; }, placeAt, t2s, s2t, demoTruthPixels, get demo() { return demo; }, get K() { return K; }, mapPutt };
 </script>
 </body>

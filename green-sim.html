@@ -1716,6 +1716,7 @@
         // visit here) can use them without loading the file again.
         const LAST_SCAN_ID = 'last-scan', LAST_SCAN_KEY = 'puttguide.lastScan', SIM_STATE_KEY = 'puttguide.simState';
         let lastScanStamp = null;
+        let bootSimState = null;
         function rememberScan(hm, g) {
             lastScanStamp = Date.now();
             try { localStorage.setItem(LAST_SCAN_KEY, JSON.stringify({ stamp: lastScanStamp, name: g.name, json: hm })); }
@@ -1746,6 +1747,8 @@
                 q.set('bx', ballMarker.x.toFixed(3)); q.set('bz', ballMarker.z.toFixed(3));
                 q.set('hx', holeMarker.x.toFixed(3)); q.set('hz', holeMarker.z.toFixed(3));
             }
+            if (selectedPreset.id === LAST_SCAN_ID && lastScanStamp) q.set('sc', String(lastScanStamp)); // which scan these spots are on
+            q.set('t', String(Date.now()));
             q.set('p', String(puttPower)); q.set('s', String(stimp));
             return 'ar-view.html?' + q.toString();
         }
@@ -1755,10 +1758,17 @@
             const n = (k) => parseFloat(q.get(k));
             if (isFinite(n('p'))) { puttPower = Math.max(0, Math.min(100, Math.round(n('p')))); document.getElementById('power-slider').value = puttPower; }
             if (isFinite(n('s'))) { stimp = Math.max(6, Math.min(14, n('s'))); document.getElementById('stimp-slider').value = stimp; }
-            if ([n('bx'), n('bz'), n('hx'), n('hz')].every(isFinite)) {
-                const b = { x: n('bx'), z: n('bz') }, h = { x: n('hx'), z: n('hz') };
-                if (isOnGreen(b.x, b.z) && isOnGreen(h.x, h.z)) { ballMarker = b; holeMarker = h; if (selectedPreset.kind === 'grid') zoomToPutt(); }
+            const sameScan = (sc) => selectedPreset.id !== LAST_SCAN_ID || !sc || sc === lastScanStamp;
+            let b = null, h = null;
+            if ([n('bx'), n('bz'), n('hx'), n('hz')].every(isFinite) && sameScan(n('sc'))) { b = { x: n('bx'), z: n('bz') }; h = { x: n('hx'), z: n('hz') }; }
+            else {
+                // Coming back without spots in the link: use what was saved for this same green/scan.
+                try {
+                    const st = bootSimState; // read before selectGreen() saved over it
+                    if (st && st.ball && st.hole && st.greenId === selectedPreset.id && (selectedPreset.id !== LAST_SCAN_ID || st.scanStamp === lastScanStamp)) { b = st.ball; h = st.hole; }
+                } catch (_) {}
             }
+            if (b && h && isOnGreen(b.x, b.z) && isOnGreen(h.x, h.z)) { ballMarker = b; holeMarker = h; if (selectedPreset.kind === 'grid') zoomToPutt(); }
             updateUI();
         }
 
@@ -2011,6 +2021,7 @@
         // Open on the real green by default; ?green=preset keeps the synthetic ones;
         // ?green=last-scan (or a preset id) comes back from the AR view.
         (function initGreen() {
+            try { bootSimState = JSON.parse(localStorage.getItem(SIM_STATE_KEY) || 'null'); } catch (_) {}
             const want = new URLSearchParams(window.location.search).get('green');
             const remembered = restoreLastScan();
             if (remembered) populatePresets();
